@@ -31,8 +31,8 @@ app.use(fileUpload({
 }));
 
 // Routes
-app.use("/api/v1", require("./routes/userRoute"));
-app.use("/api/v1", require("./routes/productRoute"));
+app.use("/api/v1/products", require("./routes/productRoute"));  
+app.use("/api/v1", require("./routes/userRoute"));            
 
 // Test Route
 app.get("/", (req, res) => {
