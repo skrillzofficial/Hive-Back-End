@@ -272,10 +272,14 @@ const searchProducts = async (req, res) => {
 // ============= ADMIN ONLY ROUTES =============
 
 // @desc    Create new product
-// @route   POST /api/products
+// @route   POST /api/products/create
 // @access  Private/Admin
 const createProduct = async (req, res) => {
   try {
+    console.log('Request Body:', req.body);
+    console.log('Request Files:', req.files);
+
+    // Extract data from req.body
     const {
       id,
       name,
@@ -287,29 +291,37 @@ const createProduct = async (req, res) => {
       currency,
       inStock,
       stockCount,
-      sizes,
-      colors,
       description,
-      features,
       material,
       care,
       madeIn,
       rating,
       reviews,
-      tags,
     } = req.body;
 
-    // Handle image uploads
+    // Handle array fields that come as 'field[]' from FormData
+    const sizes = req.body['sizes[]'] 
+      ? (Array.isArray(req.body['sizes[]']) ? req.body['sizes[]'] : [req.body['sizes[]']]) 
+      : [];
+    
+    const colors = req.body['colors[]'] 
+      ? (Array.isArray(req.body['colors[]']) ? req.body['colors[]'] : [req.body['colors[]']]) 
+      : [];
+    
+    const features = req.body['features[]'] 
+      ? (Array.isArray(req.body['features[]']) ? req.body['features[]'] : [req.body['features[]']]).filter(Boolean)
+      : [];
+    
+    const tags = req.body['tags[]'] 
+      ? (Array.isArray(req.body['tags[]']) ? req.body['tags[]'] : [req.body['tags[]']]).filter(Boolean)
+      : [];
+
+    // Handle image uploads from files
     let imageUrls = [];
 
     if (req.files && req.files.images) {
       const files = validateImageFiles(req.files.images);
       imageUrls = await uploadMultipleImages(files);
-    } else if (req.body.images) {
-      // If images are provided as URLs (array of strings)
-      imageUrls = Array.isArray(req.body.images)
-        ? req.body.images
-        : [req.body.images];
     }
 
     if (imageUrls.length === 0) {
@@ -337,11 +349,11 @@ const createProduct = async (req, res) => {
       slug,
       category,
       subcategory,
-      price,
-      salePrice,
-      currency,
-      inStock,
-      stockCount,
+      price: Number(price),
+      salePrice: salePrice ? Number(salePrice) : undefined,
+      currency: currency || 'NGN',
+      inStock: inStock === 'true' || inStock === true,
+      stockCount: Number(stockCount),
       images: imageUrls,
       sizes,
       colors,
@@ -350,8 +362,8 @@ const createProduct = async (req, res) => {
       material,
       care,
       madeIn,
-      rating,
-      reviews,
+      rating: rating ? Number(rating) : undefined,
+      reviews: reviews ? Number(reviews) : undefined,
       tags,
     });
 
@@ -361,6 +373,7 @@ const createProduct = async (req, res) => {
       product,
     });
   } catch (error) {
+    console.error('Create product error:', error);
     res.status(400).json({
       success: false,
       message: error.message,
@@ -373,6 +386,9 @@ const createProduct = async (req, res) => {
 // @access  Private/Admin
 const updateProduct = async (req, res) => {
   try {
+    console.log('Request Body:', req.body);
+    console.log('Request Files:', req.files);
+    
     const product = await Product.findById(req.params.id);
 
     if (!product) {
@@ -382,49 +398,40 @@ const updateProduct = async (req, res) => {
       });
     }
 
-    let imageUrls = [...product.images]; 
-
-    // Handle complete image replacement first
-    if (req.body.replaceImages === 'true' || req.body.replaceImages === true) {
-      if (req.body.images) {
-        imageUrls = Array.isArray(req.body.images)
-          ? req.body.images
-          : [req.body.images];
-      }
-    } else {
-      // Handle image removal
-      if (req.body.imagesToRemove) {
-        const toRemove = Array.isArray(req.body.imagesToRemove)
-          ? req.body.imagesToRemove
-          : [req.body.imagesToRemove];
-
-        // Delete from Cloudinary
-        for (const imageUrl of toRemove) {
-          try {
-            await deleteFromCloudinary(imageUrl);
-          } catch (err) {
-            console.error('Failed to delete image from Cloudinary:', err);
-          }
-        }
-
-        // Remove from array
-        imageUrls = imageUrls.filter((url) => !toRemove.includes(url));
-      }
-
-      // Handle new image uploads (add to existing)
-      if (req.files && req.files.images) {
-        const files = validateImageFiles(req.files.images);
-        const newImageUrls = await uploadMultipleImages(files);
-        imageUrls = [...imageUrls, ...newImageUrls];
-      }
+    let imageUrls = [];
+    
+    // Get existing images that user wants to keep
+    if (req.body['existingImages[]']) {
+      imageUrls = Array.isArray(req.body['existingImages[]']) 
+        ? req.body['existingImages[]'] 
+        : [req.body['existingImages[]']];
     }
 
-    const updateData = {
-      ...req.body,
-      images: imageUrls,
-    };
+    // Upload new images and add to array
+    if (req.files && req.files.images) {
+      const files = validateImageFiles(req.files.images);
+      const newImageUrls = await uploadMultipleImages(files);
+      imageUrls = [...imageUrls, ...newImageUrls];
+    }
 
-    // Remove helper fields before saving
+    // Prepare update data
+    const updateData = { ...req.body };
+    
+    // Handle array fields that come as 'field[]'
+    ['sizes', 'colors', 'features', 'tags'].forEach(field => {
+      if (updateData[`${field}[]`]) {
+        updateData[field] = Array.isArray(updateData[`${field}[]`])
+          ? updateData[`${field}[]`].filter(Boolean)
+          : [updateData[`${field}[]`]].filter(Boolean);
+        delete updateData[`${field}[]`];
+      }
+    });
+    
+    // Set the final images array
+    updateData.images = imageUrls;
+    
+    // Clean up helper fields
+    delete updateData['existingImages[]'];
     delete updateData.imagesToRemove;
     delete updateData.replaceImages;
 
@@ -443,7 +450,7 @@ const updateProduct = async (req, res) => {
       product: updatedProduct,
     });
   } catch (error) {
-    console.error('Update product error:', error); 
+    console.error('Update product error:', error);
     res.status(400).json({
       success: false,
       message: error.message,
