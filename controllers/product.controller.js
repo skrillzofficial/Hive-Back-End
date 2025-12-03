@@ -2,6 +2,7 @@ const Product = require("../models/product");
 const {
   uploadMultipleImages,
   validateImageFiles,
+  deleteFromCloudinary,
 } = require("../utils/imageUpload");
 
 // @desc    Get all products
@@ -381,35 +382,41 @@ const updateProduct = async (req, res) => {
       });
     }
 
-    let imageUrls = [...product.images]; // Copy existing images
+    let imageUrls = [...product.images]; 
 
-    // Handle new image uploads
-    if (req.files && req.files.images) {
-      const files = validateImageFiles(req.files.images);
-      const newImageUrls = await uploadMultipleImages(files);
-      imageUrls = [...imageUrls, ...newImageUrls]; // Add to existing
-    }
+    // Handle complete image replacement first
+    if (req.body.replaceImages === 'true' || req.body.replaceImages === true) {
+      if (req.body.images) {
+        imageUrls = Array.isArray(req.body.images)
+          ? req.body.images
+          : [req.body.images];
+      }
+    } else {
+      // Handle image removal
+      if (req.body.imagesToRemove) {
+        const toRemove = Array.isArray(req.body.imagesToRemove)
+          ? req.body.imagesToRemove
+          : [req.body.imagesToRemove];
 
-    // Handle image removal (if imagesToRemove is sent)
-    if (req.body.imagesToRemove) {
-      const toRemove = Array.isArray(req.body.imagesToRemove)
-        ? req.body.imagesToRemove
-        : [req.body.imagesToRemove];
+        // Delete from Cloudinary
+        for (const imageUrl of toRemove) {
+          try {
+            await deleteFromCloudinary(imageUrl);
+          } catch (err) {
+            console.error('Failed to delete image from Cloudinary:', err);
+          }
+        }
 
-      // Delete from Cloudinary
-      for (const imageUrl of toRemove) {
-        await deleteFromCloudinary(imageUrl);
+        // Remove from array
+        imageUrls = imageUrls.filter((url) => !toRemove.includes(url));
       }
 
-      // Remove from array
-      imageUrls = imageUrls.filter((url) => !toRemove.includes(url));
-    }
-
-    // Handle complete image replacement
-    if (req.body.replaceImages && req.body.images) {
-      imageUrls = Array.isArray(req.body.images)
-        ? req.body.images
-        : [req.body.images];
+      // Handle new image uploads (add to existing)
+      if (req.files && req.files.images) {
+        const files = validateImageFiles(req.files.images);
+        const newImageUrls = await uploadMultipleImages(files);
+        imageUrls = [...imageUrls, ...newImageUrls];
+      }
     }
 
     const updateData = {
@@ -436,13 +443,13 @@ const updateProduct = async (req, res) => {
       product: updatedProduct,
     });
   } catch (error) {
+    console.error('Update product error:', error); 
     res.status(400).json({
       success: false,
       message: error.message,
     });
   }
 };
-
 // @desc    Delete product (soft delete)
 // @route   DELETE /api/products/:id
 // @access  Private/Admin
@@ -537,79 +544,6 @@ const updateProductStock = async (req, res) => {
   }
 };
 
-// ============= USER PURCHASE ROUTE =============
-
-// @desc    Purchase product (reduce stock)
-// @route   POST /api/products/:id/purchase
-// @access  Private (authenticated user)
-const purchaseProduct = async (req, res) => {
-  try {
-    const { quantity = 1, size, color } = req.body;
-
-    const product = await Product.findById(req.params.id);
-
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message: "Product not found",
-      });
-    }
-
-    // Check if product is available
-    if (!product.isAvailable()) {
-      return res.status(400).json({
-        success: false,
-        message: "Product is out of stock",
-      });
-    }
-
-    // Validate size and color if provided
-    if (size && !product.sizes.includes(size)) {
-      return res.status(400).json({
-        success: false,
-        message: "Selected size is not available",
-      });
-    }
-
-    if (color && !product.colors.includes(color)) {
-      return res.status(400).json({
-        success: false,
-        message: "Selected color is not available",
-      });
-    }
-
-    // Check if enough stock is available
-    if (product.stockCount < quantity) {
-      return res.status(400).json({
-        success: false,
-        message: `Only ${product.stockCount} items available in stock`,
-      });
-    }
-
-    // Reduce stock
-    await product.reduceStock(quantity);
-
-    res.status(200).json({
-      success: true,
-      message: "Product purchased successfully",
-      data: {
-        product: product.name,
-        quantity,
-        size,
-        color,
-        remainingStock: product.stockCount,
-        totalPrice: (product.salePrice || product.price) * quantity,
-        currency: product.currency,
-      },
-    });
-  } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
-
 // @desc    Check product availability
 // @route   GET /api/products/:id/availability
 // @access  Public
@@ -695,6 +629,4 @@ module.exports = {
   updateProductStock,
   uploadProductImages,
 
-  // User purchase route
-  purchaseProduct,
 };

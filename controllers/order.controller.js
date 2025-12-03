@@ -1,0 +1,669 @@
+const Order = require('../models/order');
+const Transaction = require('../models/transaction');
+const User = require('../models/user');
+const Product = require('../models/product');
+const { sendOrderConfirmationEmail, sendOrderStatusUpdateEmail } = require('../utils/sendEmail');
+
+// Helper function to send order confirmation email
+const sendOrderConfirmation = async (order) => {
+  try {
+    await sendOrderConfirmationEmail({
+      firstName: order.customerInfo.firstName,
+      lastName: order.customerInfo.lastName,
+      email: order.customerInfo.email,
+      orderNumber: order.orderNumber,
+      total: order.total,
+      items: order.items,
+      shippingAddress: order.customerInfo.shippingAddress,
+      estimatedDelivery: order.estimatedDelivery
+    });
+    console.log(`Order confirmation email sent to ${order.customerInfo.email}`);
+    return true;
+  } catch (error) {
+    console.error(`Failed to send order confirmation email:`, error);
+    return false;
+  }
+};
+
+// Helper function to send order status update email
+const sendOrderStatusUpdate = async (order, status) => {
+  try {
+    await sendOrderStatusUpdateEmail({
+      firstName: order.customerInfo.firstName,
+      lastName: order.customerInfo.lastName,
+      email: order.customerInfo.email,
+      orderNumber: order.orderNumber,
+      status: status,
+      trackingNumber: order.trackingNumber,
+      estimatedDelivery: order.estimatedDelivery
+    });
+    console.log(`Order status update email sent to ${order.customerInfo.email}`);
+    return true;
+  } catch (error) {
+    console.error(`Failed to send order status update email:`, error);
+    return false;
+  }
+};
+
+class OrderController {
+  // @desc    Create new order (guest or user)
+  // @route   POST /api/orders/create
+  // @access  Public
+  async createOrder(req, res) {
+    try {
+      const {
+        customerInfo,
+        accountOptions,
+        orderDetails,
+        metadata
+      } = req.body;
+
+      // Validate required fields
+      if (!customerInfo || !orderDetails) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide all required fields',
+        });
+      }
+
+      // Check if user exists (if logged in)
+      let user = null;
+      if (req.user) {
+        user = await User.findById(req.user.id);
+      }
+
+      // Check if creating account during checkout
+      let newUser = null;
+      if (accountOptions && accountOptions.createAccount && accountOptions.password) {
+        // Check if email already exists
+        const existingUser = await User.findOne({ email: customerInfo.email.toLowerCase() });
+        
+        if (existingUser) {
+          return res.status(400).json({
+            success: false,
+            message: 'Email already registered. Please login.',
+          });
+        }
+
+        // Create new user account
+        newUser = await User.create({
+          firstName: customerInfo.firstName,
+          lastName: customerInfo.lastName,
+          email: customerInfo.email.toLowerCase(),
+          password: accountOptions.password,
+          phone: customerInfo.phone,
+          address: {
+            street: customerInfo.shippingAddress.address,
+            city: customerInfo.shippingAddress.city,
+            state: customerInfo.shippingAddress.state,
+            zipCode: customerInfo.shippingAddress.postalCode,
+            country: customerInfo.shippingAddress.country || 'Nigeria'
+          }
+        });
+
+        user = newUser;
+      }
+
+      // Create order
+      const order = await Order.create({
+        customer: user ? user._id : null,
+        customerInfo: {
+          firstName: customerInfo.firstName,
+          lastName: customerInfo.lastName,
+          email: customerInfo.email.toLowerCase(),
+          phone: customerInfo.phone,
+          shippingAddress: {
+            street: customerInfo.shippingAddress.address,
+            city: customerInfo.shippingAddress.city,
+            state: customerInfo.shippingAddress.state,
+            zipCode: customerInfo.shippingAddress.postalCode,
+            country: customerInfo.shippingAddress.country || 'Nigeria'
+          }
+        },
+        items: orderDetails.items,
+        subtotal: orderDetails.subtotal,
+        shippingCost: orderDetails.shippingCost,
+        tax: orderDetails.vat || orderDetails.tax || 0,
+        total: orderDetails.total,
+        deliveryMethod: orderDetails.deliveryMethod || 'standard',
+        isGuestOrder: !user,
+        accountCreated: !!newUser,
+        qualifiesForFreeShipping: orderDetails.qualifiesForFreeShipping || false,
+        notes: orderDetails.notes || ''
+      });
+
+      // Create transaction record
+      const transaction = await Transaction.create({
+        order: order._id,
+        amount: order.total,
+        currency: 'NGN',
+        customerEmail: customerInfo.email.toLowerCase(),
+        customerName: `${customerInfo.firstName} ${customerInfo.lastName}`,
+        gateway: 'paystack'
+      });
+
+      // Update order with transaction reference
+      order.transaction = transaction._id;
+      await order.save();
+
+      // Send order confirmation email
+      await sendOrderConfirmation(order);
+
+      res.status(201).json({
+        success: true,
+        message: user ? 'Order created successfully' : 'Guest order created successfully',
+        data: {
+          order: {
+            id: order._id,
+            orderNumber: order.orderNumber,
+            total: order.total,
+            status: order.status
+          },
+          transaction: {
+            id: transaction._id,
+            reference: transaction.reference,
+            amount: transaction.amount
+          },
+          userCreated: !!newUser,
+          requiresPayment: true
+        }
+      });
+
+    } catch (error) {
+      console.error('Order creation error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error creating order',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+
+  // @desc    Get order by ID (for authenticated users)
+  // @route   GET /api/orders/:id
+  // @access  Private
+  async getOrder(req, res) {
+    try {
+      const { id } = req.params;
+
+      if (!id) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide order ID',
+        });
+      }
+
+      const order = await Order.findById(id)
+        .populate('customer', 'firstName lastName email phone')
+        .populate('transaction');
+
+      if (!order) {
+        return res.status(404).json({
+          success: false,
+          message: 'Order not found',
+        });
+      }
+
+      // Check if user is authorized to view this order
+      let isAuthorized = false;
+
+      // 1. If user is logged in and owns the order
+      if (req.user && order.customer && order.customer._id.toString() === req.user.id) {
+        isAuthorized = true;
+      }
+      // 2. If it's a guest order and email matches current user's email
+      else if (order.isGuestOrder && req.user && order.customerInfo.email.toLowerCase() === req.user.email.toLowerCase()) {
+        isAuthorized = true;
+      }
+      // 3. Admin can view any order
+      else if (req.user && req.user.role === 'admin') {
+        isAuthorized = true;
+      }
+
+      if (!isAuthorized) {
+        return res.status(403).json({
+          success: false,
+          message: 'Not authorized to view this order',
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        data: order
+      });
+
+    } catch (error) {
+      console.error('Get order error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error fetching order',
+      });
+    }
+  }
+
+  // @desc    Get order by order number (for authenticated users)
+  // @route   GET /api/orders/number/:orderNumber
+  // @access  Private
+  async getOrderByNumber(req, res) {
+    try {
+      const { orderNumber } = req.params;
+
+      if (!orderNumber) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide order number',
+        });
+      }
+
+      const order = await Order.findOne({
+        orderNumber: orderNumber.toUpperCase()
+      })
+      .populate('customer', 'firstName lastName email phone')
+      .populate('transaction');
+
+      if (!order) {
+        return res.status(404).json({
+          success: false,
+          message: 'Order not found',
+        });
+      }
+
+      // Check if user is authorized to view this order
+      let isAuthorized = false;
+
+      // 1. If user is logged in and owns the order
+      if (req.user && order.customer && order.customer._id.toString() === req.user.id) {
+        isAuthorized = true;
+      }
+      // 2. If it's a guest order and email matches current user's email
+      else if (order.isGuestOrder && req.user && order.customerInfo.email.toLowerCase() === req.user.email.toLowerCase()) {
+        isAuthorized = true;
+      }
+      // 3. Admin can view any order
+      else if (req.user && req.user.role === 'admin') {
+        isAuthorized = true;
+      }
+
+      if (!isAuthorized) {
+        return res.status(403).json({
+          success: false,
+          message: 'Not authorized to view this order',
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        data: order
+      });
+
+    } catch (error) {
+      console.error('Get order by number error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error fetching order',
+      });
+    }
+  }
+
+  // @desc    Get user orders (authenticated users)
+  // @route   GET /api/orders/my-orders
+  // @access  Private
+  async getUserOrders(req, res) {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          message: 'Authentication required',
+        });
+      }
+
+      // Get all orders for this user (by customer ID OR matching email for guest orders)
+      const orders = await Order.find({
+        $or: [
+          { customer: req.user.id },
+          { 
+            isGuestOrder: true,
+            'customerInfo.email': req.user.email.toLowerCase()
+          }
+        ]
+      })
+      .sort({ createdAt: -1 })
+      .populate('transaction');
+
+      res.status(200).json({
+        success: true,
+        count: orders.length,
+        data: orders
+      });
+
+    } catch (error) {
+      console.error('Get user orders error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error fetching orders',
+      });
+    }
+  }
+
+  // @desc    Create account after purchase (guest to user)
+  // @route   POST /api/auth/create-account-post-purchase
+  // @access  Public
+  async createAccountAfterPurchase(req, res) {
+    try {
+      const { email, password, firstName, lastName } = req.body;
+
+      if (!email || !password) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide email and password',
+        });
+      }
+
+      // Check if user already exists
+      const existingUser = await User.findOne({ email: email.toLowerCase() });
+      
+      if (existingUser) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email already registered. Please login.',
+        });
+      }
+
+      // Create new user
+      const user = await User.create({
+        firstName: firstName || '',
+        lastName: lastName || '',
+        email: email.toLowerCase(),
+        password,
+        loginCount: 0,
+      });
+
+      // Find and link guest orders to this user
+      await Order.updateMany(
+        { 
+          'customerInfo.email': email.toLowerCase(),
+          isGuestOrder: true,
+          customer: null
+        },
+        { 
+          customer: user._id,
+          isGuestOrder: false,
+          accountCreated: true
+        }
+      );
+
+      // Generate token
+      const token = user.getSignedJwtToken();
+
+      res.status(201).json({
+        success: true,
+        message: 'Account created successfully',
+        token,
+        user: {
+          id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          role: user.role,
+          isPhoneVerified: user.isPhoneVerified,
+        }
+      });
+
+    } catch (error) {
+      console.error('Create account error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error creating account',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+
+  // @desc    Update order status
+  // @route   PUT /api/orders/:id/status
+  // @access  Private/Admin
+  async updateOrderStatus(req, res) {
+    try {
+      const { id } = req.params;
+      const { status, deliveryStatus, trackingNumber } = req.body;
+
+      if (!id) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide order ID',
+        });
+      }
+
+      // Check if user is admin
+      if (!req.user || req.user.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'Not authorized to update order status',
+        });
+      }
+
+      const order = await Order.findById(id);
+
+      if (!order) {
+        return res.status(404).json({
+          success: false,
+          message: 'Order not found',
+        });
+      }
+
+      // Update fields if provided
+      const previousStatus = order.status;
+      if (status) order.status = status;
+      if (deliveryStatus) order.deliveryStatus = deliveryStatus;
+      if (trackingNumber) order.trackingNumber = trackingNumber;
+
+      await order.save();
+
+      // Send status update email if status changed
+      if (status && status !== previousStatus) {
+        await sendOrderStatusUpdate(order, status);
+      }
+
+      res.status(200).json({
+        success: true,
+        message: 'Order updated successfully',
+        data: order
+      });
+
+    } catch (error) {
+      console.error('Update order error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error updating order',
+      });
+    }
+  }
+
+  // @desc    Verify payment webhook (Paystack)
+  // @route   POST /api/payment/webhook
+  // @access  Public (Paystack calls this)
+  async verifyPaymentWebhook(req, res) {
+    try {
+      const secret = process.env.PAYSTACK_SECRET_KEY;
+      
+      // Verify webhook signature
+      const crypto = require('crypto');
+      const hash = crypto.createHmac('sha512', secret)
+        .update(JSON.stringify(req.body))
+        .digest('hex');
+      
+      if (hash !== req.headers['x-paystack-signature']) {
+        return res.status(400).send('Invalid signature');
+      }
+
+      const event = req.body;
+      
+      if (event.event === 'charge.success') {
+        const transactionRef = event.data.reference;
+        
+        // Find transaction
+        const transaction = await Transaction.findOne({ reference: transactionRef });
+        
+        if (transaction && transaction.status === 'pending') {
+          // Update transaction status
+          await transaction.updateStatus('success', event.data);
+          
+          // Update stock
+          const order = await Order.findById(transaction.order);
+          if (order) {
+            await order.updateStock();
+            
+            // Send payment confirmation email
+            await sendOrderStatusUpdate(order, 'paid');
+          }
+        }
+      }
+
+      res.sendStatus(200);
+    } catch (error) {
+      console.error('Payment webhook error:', error);
+      res.status(500).send('Webhook error');
+    }
+  }
+
+  // @desc    Get all orders (Admin)
+  // @route   GET /api/orders
+  // @access  Private/Admin
+  async getAllOrders(req, res) {
+    try {
+      // Check if user is admin
+      if (!req.user || req.user.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'Not authorized to view all orders',
+        });
+      }
+
+      const { status, page = 1, limit = 20 } = req.query;
+      const query = {};
+      
+      if (status) {
+        query.status = status;
+      }
+
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+
+      const orders = await Order.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .populate('customer', 'firstName lastName email')
+        .populate('transaction');
+
+      const total = await Order.countDocuments(query);
+
+      res.status(200).json({
+        success: true,
+        count: orders.length,
+        total,
+        pages: Math.ceil(total / limit),
+        currentPage: parseInt(page),
+        data: orders
+      });
+
+    } catch (error) {
+      console.error('Get all orders error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error fetching orders',
+      });
+    }
+  }
+
+  // @desc    Search orders by phone number (Admin only)
+  // @route   GET /api/orders/search/phone/:phone
+  // @access  Private/Admin
+  async searchOrdersByPhone(req, res) {
+    try {
+      // Check if user is admin
+      if (!req.user || req.user.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'Not authorized to search orders',
+        });
+      }
+
+      const { phone } = req.params;
+      
+      if (!phone) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide phone number',
+        });
+      }
+
+      // Search for orders with matching phone number
+      const orders = await Order.find({
+        'customerInfo.phone': { $regex: phone, $options: 'i' }
+      })
+      .sort({ createdAt: -1 })
+      .populate('customer', 'firstName lastName email')
+      .populate('transaction');
+
+      res.status(200).json({
+        success: true,
+        count: orders.length,
+        data: orders
+      });
+
+    } catch (error) {
+      console.error('Search orders by phone error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error searching orders',
+      });
+    }
+  }
+
+  // @desc    Search orders by email (Admin only)
+  // @route   GET /api/orders/search/email/:email
+  // @access  Private/Admin
+  async searchOrdersByEmail(req, res) {
+    try {
+      // Check if user is admin
+      if (!req.user || req.user.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'Not authorized to search orders',
+        });
+      }
+
+      const { email } = req.params;
+      
+      if (!email) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide email address',
+        });
+      }
+
+      // Search for orders with matching email
+      const orders = await Order.find({
+        'customerInfo.email': email.toLowerCase()
+      })
+      .sort({ createdAt: -1 })
+      .populate('customer', 'firstName lastName email')
+      .populate('transaction');
+
+      res.status(200).json({
+        success: true,
+        count: orders.length,
+        data: orders
+      });
+
+    } catch (error) {
+      console.error('Search orders by email error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error searching orders',
+      });
+    }
+  }
+}
+
+module.exports = new OrderController();
