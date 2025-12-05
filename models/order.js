@@ -5,7 +5,6 @@ const orderSchema = new mongoose.Schema(
     // Order Identification
     orderNumber: {
       type: String,
-      required: true,
       unique: true,
       uppercase: true
     },
@@ -158,16 +157,34 @@ const orderSchema = new mongoose.Schema(
   }
 );
 
-// Generate order number before saving
-orderSchema.pre('save', async function(next) {
+//Generate order number BEFORE validation
+orderSchema.pre('validate', async function(next) {
   if (!this.orderNumber) {
-    const year = new Date().getFullYear().toString().slice(-2);
-    const month = (new Date().getMonth() + 1).toString().padStart(2, '0');
-    const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-    this.orderNumber = `ORD${year}${month}${random}`;
+    // Generate unique order number with better format
+    const date = new Date();
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    
+    // Get count of orders today for sequential numbering
+    const todayStart = new Date(date.setHours(0, 0, 0, 0));
+    const todayEnd = new Date(date.setHours(23, 59, 59, 999));
+    
+    const count = await this.constructor.countDocuments({
+      createdAt: { $gte: todayStart, $lte: todayEnd }
+    });
+    
+    const sequence = String(count + 1).padStart(4, '0');
+    this.orderNumber = `ORD-${year}${month}${day}-${sequence}`;
   }
   next();
 });
+
+// Index for better query performance
+orderSchema.index({ orderNumber: 1 });
+orderSchema.index({ 'customerInfo.email': 1 });
+orderSchema.index({ customer: 1, createdAt: -1 });
+orderSchema.index({ createdAt: -1 });
 
 // Static Methods
 orderSchema.statics.findByOrderNumber = function(orderNumber) {
