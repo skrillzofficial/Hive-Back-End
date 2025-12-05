@@ -1,7 +1,10 @@
-const Transaction = require('../models/transaction');
-const Order = require('../models/order');
-const axios = require('axios');
-const crypto = require('crypto');
+const Transaction = require("../models/transaction");
+const Order = require("../models/order");
+const User = require('../models/user'); 
+const Product = require('../models/product');
+const axios = require("axios");
+const crypto = require("crypto");
+const { sendOrderConfirmationEmail } = require('../utils/sendEmail'); 
 
 // @desc    Verify payment transaction
 // @route   GET /api/transactions/verify/:reference
@@ -13,32 +16,36 @@ const verifyTransaction = async (req, res) => {
     if (!reference) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide transaction reference',
+        message: "Please provide transaction reference",
       });
     }
 
-    const transaction = await Transaction.findOne({ reference })
-      .populate('order');
+    const transaction = await Transaction.findOne({ reference }).populate(
+      "order"
+    );
 
     if (!transaction) {
       return res.status(404).json({
         success: false,
-        message: 'Transaction not found',
+        message: "Transaction not found",
       });
     }
 
-    if (transaction.status === 'success') {
+    // If already successful, just return the data
+    if (transaction.status === "success") {
       return res.status(200).json({
         success: true,
-        message: 'Payment already verified',
+        message: "Payment already verified",
         data: {
           transaction: transaction.getPaymentDetails(),
-          order: {
-            id: transaction.order._id,
-            orderNumber: transaction.order.orderNumber,
-            status: transaction.order.status
-          }
-        }
+          order: transaction.order
+            ? {
+                id: transaction.order._id,
+                orderNumber: transaction.order.orderNumber,
+                status: transaction.order.status,
+              }
+            : null,
+        },
       });
     }
 
@@ -47,48 +54,132 @@ const verifyTransaction = async (req, res) => {
       `https://api.paystack.co/transaction/verify/${reference}`,
       {
         headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
-        }
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+        },
       }
     );
 
     const paymentData = paystackResponse.data.data;
 
-    if (paymentData.status === 'success') {
-      await transaction.updateStatus('success', paymentData);
-      await transaction.order.updateStock();
+    if (paymentData.status === "success") {
+      // Update transaction status
+      await transaction.updateStatus("success", paymentData);
+
+      // IMPORTANT: Check if order already exists, if not create it
+      if (!transaction.order) {
+        const { customerInfo, orderDetails, userId, accountOptions } =
+          transaction.metadata;
+
+        // Handle account creation if requested
+        let user = null;
+        if (userId) {
+          user = await User.findById(userId);
+        } else if (accountOptions?.createAccount && accountOptions?.password) {
+          const existingUser = await User.findOne({
+            email: customerInfo.email.toLowerCase(),
+          });
+
+          if (!existingUser) {
+            user = await User.create({
+              firstName: customerInfo.firstName,
+              lastName: customerInfo.lastName,
+              email: customerInfo.email.toLowerCase(),
+              password: accountOptions.password,
+              phone: customerInfo.phone,
+              address: customerInfo.shippingAddress,
+            });
+          }
+        }
+
+        // Create the order
+        const order = await Order.create({
+          customer: user ? user._id : null,
+          customerInfo: {
+            firstName: customerInfo.firstName,
+            lastName: customerInfo.lastName,
+            email: customerInfo.email.toLowerCase(),
+            phone: customerInfo.phone,
+            shippingAddress: customerInfo.shippingAddress,
+          },
+          items: orderDetails.items,
+          subtotal: orderDetails.subtotal,
+          shippingCost: orderDetails.shippingCost,
+          tax: orderDetails.vat || orderDetails.tax || 0,
+          total: orderDetails.total,
+          deliveryMethod: orderDetails.deliveryMethod || "standard",
+          isGuestOrder: !user,
+          accountCreated: !!user,
+          qualifiesForFreeShipping:
+            orderDetails.qualifiesForFreeShipping || false,
+          notes: orderDetails.notes || "",
+          paymentStatus: "paid",
+          transaction: transaction._id,
+        });
+
+        // Link transaction to order
+        transaction.order = order._id;
+        await transaction.save();
+
+        // Update stock
+        for (const item of orderDetails.items) {
+          await Product.findByIdAndUpdate(item.product, {
+            $inc: { stock: -item.quantity },
+          });
+        }
+
+        // Send confirmation email
+        await sendOrderConfirmationEmail({
+          firstName: order.customerInfo.firstName,
+          lastName: order.customerInfo.lastName,
+          email: order.customerInfo.email,
+          orderNumber: order.orderNumber,
+          total: order.total,
+          items: order.items,
+          shippingAddress: order.customerInfo.shippingAddress,
+          estimatedDelivery: order.estimatedDelivery,
+        });
+
+        console.log(
+          "Order created in verification endpoint:",
+          order.orderNumber
+        );
+      }
+
+      // Refresh transaction with populated order
+      const updatedTransaction = await Transaction.findById(
+        transaction._id
+      ).populate("order");
 
       return res.status(200).json({
         success: true,
-        message: 'Payment verified successfully',
+        message: "Payment verified successfully",
         data: {
-          transaction: transaction.getPaymentDetails(),
+          transaction: updatedTransaction.getPaymentDetails(),
           order: {
-            id: transaction.order._id,
-            orderNumber: transaction.order.orderNumber,
-            status: transaction.order.status
-          }
-        }
+            id: updatedTransaction.order._id,
+            orderNumber: updatedTransaction.order.orderNumber,
+            status: updatedTransaction.order.status,
+          },
+        },
       });
     } else {
-      await transaction.updateStatus('failed', paymentData);
+      await transaction.updateStatus("failed", paymentData);
 
       return res.status(400).json({
         success: false,
-        message: 'Payment verification failed',
+        message: "Payment verification failed",
         data: {
           status: paymentData.status,
-          reference: transaction.reference
-        }
+          reference: transaction.reference,
+        },
       });
     }
-
   } catch (error) {
-    console.error('Verify transaction error:', error);
+    console.error("Verify transaction error:", error);
     res.status(500).json({
       success: false,
-      message: 'Error verifying payment',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: "Error verifying payment",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -99,45 +190,46 @@ const verifyTransaction = async (req, res) => {
 const handleWebhook = async (req, res) => {
   try {
     const secret = process.env.PAYSTACK_SECRET_KEY;
-    
+
     const hash = crypto
-      .createHmac('sha512', secret)
+      .createHmac("sha512", secret)
       .update(JSON.stringify(req.body))
-      .digest('hex');
-    
-    if (hash !== req.headers['x-paystack-signature']) {
-      return res.status(400).send('Invalid signature');
+      .digest("hex");
+
+    if (hash !== req.headers["x-paystack-signature"]) {
+      return res.status(400).send("Invalid signature");
     }
 
     const event = req.body;
 
-    if (event.event === 'charge.success') {
+    if (event.event === "charge.success") {
       const reference = event.data.reference;
-      
+
       const transaction = await Transaction.findOne({ reference });
-      
+
       if (!transaction) {
-        console.error('Transaction not found:', reference);
+        console.error("Transaction not found:", reference);
         return res.sendStatus(404);
       }
 
-      if (transaction.status === 'success') {
-        console.log('Payment already processed:', reference);
+      if (transaction.status === "success") {
+        console.log("Payment already processed:", reference);
         return res.sendStatus(200);
       }
 
       // ✅ NOW CREATE THE ORDER (after payment success)
-      const { customerInfo, orderDetails, userId, accountOptions } = transaction.metadata;
+      const { customerInfo, orderDetails, userId, accountOptions } =
+        transaction.metadata;
 
       // Handle account creation if requested
       let user = null;
       if (userId) {
         user = await User.findById(userId);
       } else if (accountOptions?.createAccount && accountOptions?.password) {
-        const existingUser = await User.findOne({ 
-          email: customerInfo.email.toLowerCase() 
+        const existingUser = await User.findOne({
+          email: customerInfo.email.toLowerCase(),
         });
-        
+
         if (!existingUser) {
           user = await User.create({
             firstName: customerInfo.firstName,
@@ -145,7 +237,7 @@ const handleWebhook = async (req, res) => {
             email: customerInfo.email.toLowerCase(),
             password: accountOptions.password,
             phone: customerInfo.phone,
-            address: customerInfo.shippingAddress
+            address: customerInfo.shippingAddress,
           });
         }
       }
@@ -158,26 +250,27 @@ const handleWebhook = async (req, res) => {
           lastName: customerInfo.lastName,
           email: customerInfo.email.toLowerCase(),
           phone: customerInfo.phone,
-          shippingAddress: customerInfo.shippingAddress
+          shippingAddress: customerInfo.shippingAddress,
         },
         items: orderDetails.items,
         subtotal: orderDetails.subtotal,
         shippingCost: orderDetails.shippingCost,
         tax: orderDetails.vat || orderDetails.tax || 0,
         total: orderDetails.total,
-        deliveryMethod: orderDetails.deliveryMethod || 'standard',
+        deliveryMethod: orderDetails.deliveryMethod || "standard",
         isGuestOrder: !user,
         accountCreated: !!user,
-        qualifiesForFreeShipping: orderDetails.qualifiesForFreeShipping || false,
-        notes: orderDetails.notes || '',
-        paymentStatus: 'paid', // ✅ Already paid!
-        transaction: transaction._id
+        qualifiesForFreeShipping:
+          orderDetails.qualifiesForFreeShipping || false,
+        notes: orderDetails.notes || "",
+        paymentStatus: "paid", // ✅ Already paid!
+        transaction: transaction._id,
       });
 
       // Update transaction with order reference
       transaction.order = order._id;
-      await transaction.updateStatus('success', event.data);
-      
+      await transaction.updateStatus("success", event.data);
+
       // Update stock
       await order.updateStock();
 
@@ -190,17 +283,16 @@ const handleWebhook = async (req, res) => {
         total: order.total,
         items: order.items,
         shippingAddress: order.customerInfo.shippingAddress,
-        estimatedDelivery: order.estimatedDelivery
+        estimatedDelivery: order.estimatedDelivery,
       });
 
-      console.log('Order created successfully:', order.orderNumber);
+      console.log("Order created successfully:", order.orderNumber);
     }
 
     res.sendStatus(200);
-
   } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).send('Webhook processing error');
+    console.error("Webhook error:", error);
+    res.status(500).send("Webhook processing error");
   }
 };
 
@@ -209,16 +301,16 @@ const handleWebhook = async (req, res) => {
 // @access  Private/Admin
 const getAllTransactions = async (req, res) => {
   try {
-    if (!req.user || req.user.role !== 'admin') {
+    if (!req.user || req.user.role !== "admin") {
       return res.status(403).json({
         success: false,
-        message: 'Not authorized',
+        message: "Not authorized",
       });
     }
 
     const { status, page = 1, limit = 20 } = req.query;
     const query = {};
-    
+
     if (status) {
       query.status = status;
     }
@@ -230,24 +322,27 @@ const getAllTransactions = async (req, res) => {
       .skip(skip)
       .limit(parseInt(limit))
       .populate({
-        path: 'order',
-        select: 'orderNumber customerInfo.firstName customerInfo.lastName customerInfo.email total status createdAt'
+        path: "order",
+        select:
+          "orderNumber customerInfo.firstName customerInfo.lastName customerInfo.email total status createdAt",
       });
 
     const total = await Transaction.countDocuments(query);
 
     // Format response for table display
-    const formattedData = transactions.map(t => ({
+    const formattedData = transactions.map((t) => ({
       transactionId: t._id,
       reference: t.reference,
       orderId: t.order?._id,
       orderNumber: t.order?.orderNumber,
-      customer: t.order ? `${t.order.customerInfo.firstName} ${t.order.customerInfo.lastName}` : t.customerName,
+      customer: t.order
+        ? `${t.order.customerInfo.firstName} ${t.order.customerInfo.lastName}`
+        : t.customerName,
       email: t.customerEmail,
       date: t.createdAt,
       amount: t.amount,
       status: t.status,
-      paidAt: t.paidAt
+      paidAt: t.paidAt,
     }));
 
     res.status(200).json({
@@ -256,14 +351,13 @@ const getAllTransactions = async (req, res) => {
       total,
       pages: Math.ceil(total / limit),
       currentPage: parseInt(page),
-      data: formattedData
+      data: formattedData,
     });
-
   } catch (error) {
-    console.error('Get all transactions error:', error);
+    console.error("Get all transactions error:", error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching transactions',
+      message: "Error fetching transactions",
     });
   }
 };
@@ -273,10 +367,10 @@ const getAllTransactions = async (req, res) => {
 // @access  Private/Admin
 const getCustomerTransactions = async (req, res) => {
   try {
-    if (!req.user || req.user.role !== 'admin') {
+    if (!req.user || req.user.role !== "admin") {
       return res.status(403).json({
         success: false,
-        message: 'Not authorized',
+        message: "Not authorized",
       });
     }
 
@@ -285,23 +379,23 @@ const getCustomerTransactions = async (req, res) => {
     if (!email) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide customer email',
+        message: "Please provide customer email",
       });
     }
 
     const transactions = await Transaction.find({
-      customerEmail: email.toLowerCase()
+      customerEmail: email.toLowerCase(),
     })
-    .sort({ createdAt: -1 })
-    .populate({
-      path: 'order',
-      select: 'orderNumber customerInfo total status createdAt items'
-    });
+      .sort({ createdAt: -1 })
+      .populate({
+        path: "order",
+        select: "orderNumber customerInfo total status createdAt items",
+      });
 
     if (transactions.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'No transactions found for this customer',
+        message: "No transactions found for this customer",
       });
     }
 
@@ -311,19 +405,19 @@ const getCustomerTransactions = async (req, res) => {
     let failedCount = 0;
     let pendingCount = 0;
 
-    transactions.forEach(t => {
-      if (t.status === 'success') {
+    transactions.forEach((t) => {
+      if (t.status === "success") {
         totalSpent += t.amount;
         successfulCount++;
-      } else if (t.status === 'failed') {
+      } else if (t.status === "failed") {
         failedCount++;
-      } else if (t.status === 'pending') {
+      } else if (t.status === "pending") {
         pendingCount++;
       }
     });
 
     // Format transactions for display
-    const formattedData = transactions.map(t => ({
+    const formattedData = transactions.map((t) => ({
       transactionId: t._id,
       reference: t.reference,
       orderId: t.order?._id,
@@ -331,28 +425,27 @@ const getCustomerTransactions = async (req, res) => {
       date: t.createdAt,
       amount: t.amount,
       status: t.status,
-      paidAt: t.paidAt
+      paidAt: t.paidAt,
     }));
 
     res.status(200).json({
       success: true,
       customer: {
         email: email.toLowerCase(),
-        name: transactions[0]?.customerName || 'N/A',
+        name: transactions[0]?.customerName || "N/A",
         totalSpent,
         totalTransactions: transactions.length,
         successfulTransactions: successfulCount,
         failedTransactions: failedCount,
-        pendingTransactions: pendingCount
+        pendingTransactions: pendingCount,
       },
-      data: formattedData
+      data: formattedData,
     });
-
   } catch (error) {
-    console.error('Get customer transactions error:', error);
+    console.error("Get customer transactions error:", error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching customer transactions',
+      message: "Error fetching customer transactions",
     });
   }
 };
@@ -362,10 +455,10 @@ const getCustomerTransactions = async (req, res) => {
 // @access  Private/Admin
 const getRevenue = async (req, res) => {
   try {
-    if (!req.user || req.user.role !== 'admin') {
+    if (!req.user || req.user.role !== "admin") {
       return res.status(403).json({
         success: false,
-        message: 'Not authorized',
+        message: "Not authorized",
       });
     }
 
@@ -379,19 +472,18 @@ const getRevenue = async (req, res) => {
       dateFilter.$lte = new Date(endDate);
     }
 
-    const matchStage = Object.keys(dateFilter).length > 0 
-      ? { createdAt: dateFilter } 
-      : {};
+    const matchStage =
+      Object.keys(dateFilter).length > 0 ? { createdAt: dateFilter } : {};
 
     const stats = await Transaction.aggregate([
       { $match: matchStage },
       {
         $group: {
-          _id: '$status',
+          _id: "$status",
           count: { $sum: 1 },
-          totalAmount: { $sum: '$amount' }
-        }
-      }
+          totalAmount: { $sum: "$amount" },
+        },
+      },
     ]);
 
     const summary = {
@@ -400,32 +492,31 @@ const getRevenue = async (req, res) => {
       failedTransactions: 0,
       pendingTransactions: 0,
       totalRevenue: 0,
-      successfulRevenue: 0
+      successfulRevenue: 0,
     };
 
-    stats.forEach(stat => {
+    stats.forEach((stat) => {
       summary.totalTransactions += stat.count;
-      if (stat._id === 'success') {
+      if (stat._id === "success") {
         summary.successfulTransactions = stat.count;
         summary.successfulRevenue = stat.totalAmount;
         summary.totalRevenue = stat.totalAmount;
-      } else if (stat._id === 'failed') {
+      } else if (stat._id === "failed") {
         summary.failedTransactions = stat.count;
-      } else if (stat._id === 'pending') {
+      } else if (stat._id === "pending") {
         summary.pendingTransactions = stat.count;
       }
     });
 
     res.status(200).json({
       success: true,
-      data: summary
+      data: summary,
     });
-
   } catch (error) {
-    console.error('Get revenue error:', error);
+    console.error("Get revenue error:", error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching revenue',
+      message: "Error fetching revenue",
     });
   }
 };
@@ -434,7 +525,7 @@ module.exports = {
   // Public routes
   verifyTransaction,
   handleWebhook,
-  
+
   // Admin routes
   getAllTransactions,
   getCustomerTransactions,
