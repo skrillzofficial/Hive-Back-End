@@ -57,11 +57,21 @@ const createOrder = async (req, res) => {
       metadata
     } = req.body;
 
+    console.log('Received order data:', JSON.stringify(req.body, null, 2)); // Debug log
+
     // Validate required fields
     if (!customerInfo || !orderDetails) {
       return res.status(400).json({
         success: false,
         message: 'Please provide all required fields',
+      });
+    }
+
+    // Validate shipping address exists
+    if (!customerInfo.shippingAddress) {
+      return res.status(400).json({
+        success: false,
+        message: 'Shipping address is required',
       });
     }
 
@@ -92,10 +102,10 @@ const createOrder = async (req, res) => {
         password: accountOptions.password,
         phone: customerInfo.phone,
         address: {
-          street: customerInfo.shippingAddress.address,
+          street: customerInfo.shippingAddress.street,
           city: customerInfo.shippingAddress.city,
           state: customerInfo.shippingAddress.state,
-          zipCode: customerInfo.shippingAddress.postalCode,
+          zipCode: customerInfo.shippingAddress.zipCode,
           country: customerInfo.shippingAddress.country || 'Nigeria'
         }
       });
@@ -103,8 +113,8 @@ const createOrder = async (req, res) => {
       user = newUser;
     }
 
-    // Create order
-    const order = await Order.create({
+    // ✅ FIXED: Properly map the order data to match Order model schema
+    const orderData = {
       customer: user ? user._id : null,
       customerInfo: {
         firstName: customerInfo.firstName,
@@ -112,24 +122,32 @@ const createOrder = async (req, res) => {
         email: customerInfo.email.toLowerCase(),
         phone: customerInfo.phone,
         shippingAddress: {
-          street: customerInfo.shippingAddress.address,
+          // ✅ Now correctly mapping the fields that frontend sends
+          street: customerInfo.shippingAddress.street,
           city: customerInfo.shippingAddress.city,
           state: customerInfo.shippingAddress.state,
-          zipCode: customerInfo.shippingAddress.postalCode,
+          zipCode: customerInfo.shippingAddress.zipCode,
           country: customerInfo.shippingAddress.country || 'Nigeria'
         }
       },
-      items: orderDetails.items,
+      items: orderDetails.items, // ✅ Already has correct "product" field from frontend
       subtotal: orderDetails.subtotal,
       shippingCost: orderDetails.shippingCost,
-      tax: orderDetails.vat || orderDetails.tax || 0,
+      tax: orderDetails.vat || orderDetails.tax || 0, // ✅ Map vat to tax
       total: orderDetails.total,
       deliveryMethod: orderDetails.deliveryMethod || 'standard',
       isGuestOrder: !user,
       accountCreated: !!newUser,
       qualifiesForFreeShipping: orderDetails.qualifiesForFreeShipping || false,
       notes: orderDetails.notes || ''
-    });
+    };
+
+    console.log('Creating order with data:', JSON.stringify(orderData, null, 2)); // Debug log
+
+    // Create order
+    const order = await Order.create(orderData);
+
+    console.log('Order created successfully:', order.orderNumber); // Debug log
 
     // Create transaction record
     const transaction = await Transaction.create({
