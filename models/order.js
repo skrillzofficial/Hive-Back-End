@@ -7,6 +7,7 @@ const orderSchema = new mongoose.Schema(
       type: String,
       unique: true,
       uppercase: true
+      // ✅ REMOVED: required: true (will be generated in pre-validate hook)
     },
     
     // Customer Information
@@ -157,8 +158,8 @@ const orderSchema = new mongoose.Schema(
   }
 );
 
-//Generate order number BEFORE validation
-orderSchema.pre('validate', async function(next) {
+// ✅ FIXED: Generate order number BEFORE validation (not before save)
+orderSchema.pre('validate', async function() {
   if (!this.orderNumber) {
     // Generate unique order number with better format
     const date = new Date();
@@ -177,7 +178,6 @@ orderSchema.pre('validate', async function(next) {
     const sequence = String(count + 1).padStart(4, '0');
     this.orderNumber = `ORD-${year}${month}${day}-${sequence}`;
   }
-  next();
 });
 
 // Index for better query performance
