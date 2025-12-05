@@ -4,7 +4,7 @@ const User = require('../models/user');
 const Product = require('../models/product');
 const axios = require("axios");
 const crypto = require("crypto");
-const { sendOrderConfirmationEmail } = require('../utils/sendEmail'); 
+const { sendOrderConfirmationEmail } = require('../utils/sendEmail');
 
 // @desc    Verify payment transaction
 // @route   GET /api/transactions/verify/:reference
@@ -127,16 +127,19 @@ const verifyTransaction = async (req, res) => {
           });
         }
 
-        // Send confirmation email
+        // Send confirmation email - FIXED PARAMETERS
         await sendOrderConfirmationEmail({
           firstName: order.customerInfo.firstName,
           lastName: order.customerInfo.lastName,
           email: order.customerInfo.email,
-          orderNumber: order.orderNumber,
-          total: order.total,
+          orderId: order.orderNumber,
+          orderDate: order.createdAt,
           items: order.items,
+          subtotal: order.subtotal,
+          shipping: order.shippingCost,
+          total: order.total,
           shippingAddress: order.customerInfo.shippingAddress,
-          estimatedDelivery: order.estimatedDelivery,
+          trackingUrl: `${process.env.FRONTEND_URL}/orders/track/${order.orderNumber}`
         });
 
         console.log(
@@ -263,7 +266,7 @@ const handleWebhook = async (req, res) => {
         qualifiesForFreeShipping:
           orderDetails.qualifiesForFreeShipping || false,
         notes: orderDetails.notes || "",
-        paymentStatus: "paid", // ✅ Already paid!
+        paymentStatus: "paid",
         transaction: transaction._id,
       });
 
@@ -272,18 +275,25 @@ const handleWebhook = async (req, res) => {
       await transaction.updateStatus("success", event.data);
 
       // Update stock
-      await order.updateStock();
+      for (const item of orderDetails.items) {
+        await Product.findByIdAndUpdate(item.product, {
+          $inc: { stock: -item.quantity },
+        });
+      }
 
-      // Send confirmation email
+      // Send confirmation email - FIXED PARAMETERS
       await sendOrderConfirmationEmail({
         firstName: order.customerInfo.firstName,
         lastName: order.customerInfo.lastName,
         email: order.customerInfo.email,
-        orderNumber: order.orderNumber,
-        total: order.total,
+        orderId: order.orderNumber,
+        orderDate: order.createdAt,
         items: order.items,
+        subtotal: order.subtotal,
+        shipping: order.shippingCost,
+        total: order.total,
         shippingAddress: order.customerInfo.shippingAddress,
-        estimatedDelivery: order.estimatedDelivery,
+        trackingUrl: `${process.env.FRONTEND_URL}/orders/track/${order.orderNumber}`
       });
 
       console.log("Order created successfully:", order.orderNumber);

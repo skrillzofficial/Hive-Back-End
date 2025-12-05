@@ -12,7 +12,7 @@ const sendOrderConfirmation = async (order) => {
       firstName: order.customerInfo.firstName,
       lastName: order.customerInfo.lastName,
       email: order.customerInfo.email,
-      orderNumber: order.orderNumber,
+      orderId: order.orderNumber,
       total: order.total,
       items: order.items,
       shippingAddress: order.customerInfo.shippingAddress,
@@ -33,7 +33,7 @@ const sendOrderStatusUpdate = async (order, status) => {
       firstName: order.customerInfo.firstName,
       lastName: order.customerInfo.lastName,
       email: order.customerInfo.email,
-      orderNumber: order.orderNumber,
+      orderId: order.orderNumber,
       status: status,
       trackingNumber: order.trackingNumber,
       estimatedDelivery: order.estimatedDelivery
