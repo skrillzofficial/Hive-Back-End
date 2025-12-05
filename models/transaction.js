@@ -50,7 +50,7 @@ const transactionSchema = new mongoose.Schema(
     },
 
     metadata: {
-      type: mongoose.Schema.Types.Mixed, // ✅ Stores checkout data
+      type: mongoose.Schema.Types.Mixed,
       default: {},
     },
 
@@ -71,17 +71,7 @@ const transactionSchema = new mongoose.Schema(
   }
 );
 
-// ✅ FIXED: Generate transaction reference before saving
-transactionSchema.pre("save", function (next) {
-  if (!this.reference) {
-    const timestamp = Date.now().toString().slice(-6);
-    const random = Math.floor(Math.random() * 1000)
-      .toString()
-      .padStart(3, "0");
-    this.reference = `TXN${timestamp}${random}`;
-  }
-  next();
-});
+// ✅ REMOVED PRE-SAVE HOOK - You're generating reference in controller anyway
 
 // Static Methods
 transactionSchema.statics.findByReference = function (reference) {
@@ -98,7 +88,7 @@ transactionSchema.statics.findByCustomer = function (email) {
   });
 };
 
-// ✅ FIXED: Instance Methods - removed async from signature
+// Instance Methods
 transactionSchema.methods.updateStatus = async function (
   newStatus,
   gatewayData = {}
@@ -109,7 +99,6 @@ transactionSchema.methods.updateStatus = async function (
     this.paidAt = new Date();
     this.gatewayResponse = gatewayData;
 
-    // Update associated order if it exists
     if (this.order) {
       const Order = mongoose.model("Order");
       await Order.findByIdAndUpdate(this.order, {
@@ -120,7 +109,6 @@ transactionSchema.methods.updateStatus = async function (
   } else if (newStatus === "failed") {
     this.gatewayResponse = gatewayData;
 
-    // Update associated order if it exists
     if (this.order) {
       const Order = mongoose.model("Order");
       await Order.findByIdAndUpdate(this.order, {
