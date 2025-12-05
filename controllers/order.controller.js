@@ -45,19 +45,12 @@ const sendOrderStatusUpdate = async (order, status) => {
   }
 };
 
-// @desc    Create new order (guest or user)
-// @route   POST /api/orders/create
+// @desc    Initialize checkout and payment
+// @route   POST /api/orders/initialize-checkout
 // @access  Public
-const createOrder = async (req, res) => {
+const initializeCheckout = async (req, res) => {
   try {
-    const {
-      customerInfo,
-      accountOptions,
-      orderDetails,
-      metadata
-    } = req.body;
-
-    console.log('Received order data:', JSON.stringify(req.body, null, 2)); // Debug log
+    const { customerInfo, orderDetails } = req.body;
 
     // Validate required fields
     if (!customerInfo || !orderDetails) {
@@ -67,130 +60,80 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // Validate shipping address exists
-    if (!customerInfo.shippingAddress) {
-      return res.status(400).json({
-        success: false,
-        message: 'Shipping address is required',
-      });
-    }
-
-    // Check if user exists (if logged in)
-    let user = null;
+    // Check if user exists (optional, for logged-in users)
+    let userId = null;
     if (req.user) {
-      user = await User.findById(req.user.id);
+      userId = req.user.id;
     }
 
-    // Check if creating account during checkout
-    let newUser = null;
-    if (accountOptions && accountOptions.createAccount && accountOptions.password) {
-      // Check if email already exists
-      const existingUser = await User.findOne({ email: customerInfo.email.toLowerCase() });
-      
-      if (existingUser) {
-        return res.status(400).json({
-          success: false,
-          message: 'Email already registered. Please login.',
-        });
-      }
+    // Generate unique reference for this checkout session
+    const reference = `TXN-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
 
-      // Create new user account
-      newUser = await User.create({
-        firstName: customerInfo.firstName,
-        lastName: customerInfo.lastName,
-        email: customerInfo.email.toLowerCase(),
-        password: accountOptions.password,
-        phone: customerInfo.phone,
-        address: {
-          street: customerInfo.shippingAddress.street,
-          city: customerInfo.shippingAddress.city,
-          state: customerInfo.shippingAddress.state,
-          zipCode: customerInfo.shippingAddress.zipCode,
-          country: customerInfo.shippingAddress.country || 'Nigeria'
-        }
-      });
-
-      user = newUser;
-    }
-
-    // ✅ FIXED: Properly map the order data to match Order model schema
-    const orderData = {
-      customer: user ? user._id : null,
-      customerInfo: {
-        firstName: customerInfo.firstName,
-        lastName: customerInfo.lastName,
-        email: customerInfo.email.toLowerCase(),
-        phone: customerInfo.phone,
-        shippingAddress: {
-          // ✅ Now correctly mapping the fields that frontend sends
-          street: customerInfo.shippingAddress.street,
-          city: customerInfo.shippingAddress.city,
-          state: customerInfo.shippingAddress.state,
-          zipCode: customerInfo.shippingAddress.zipCode,
-          country: customerInfo.shippingAddress.country || 'Nigeria'
-        }
-      },
-      items: orderDetails.items, // ✅ Already has correct "product" field from frontend
-      subtotal: orderDetails.subtotal,
-      shippingCost: orderDetails.shippingCost,
-      tax: orderDetails.vat || orderDetails.tax || 0, // ✅ Map vat to tax
-      total: orderDetails.total,
-      deliveryMethod: orderDetails.deliveryMethod || 'standard',
-      isGuestOrder: !user,
-      accountCreated: !!newUser,
-      qualifiesForFreeShipping: orderDetails.qualifiesForFreeShipping || false,
-      notes: orderDetails.notes || ''
-    };
-
-    console.log('Creating order with data:', JSON.stringify(orderData, null, 2)); // Debug log
-
-    // Create order
-    const order = await Order.create(orderData);
-
-    console.log('Order created successfully:', order.orderNumber); // Debug log
-
-    // Create transaction record
+    // Create pending transaction with checkout data in metadata
     const transaction = await Transaction.create({
-      order: order._id,
-      amount: order.total,
+      reference,
+      amount: orderDetails.total,
       currency: 'NGN',
       customerEmail: customerInfo.email.toLowerCase(),
       customerName: `${customerInfo.firstName} ${customerInfo.lastName}`,
-      gateway: 'paystack'
+      gateway: 'paystack',
+      status: 'pending',
+      // ✅ Store ALL order data in metadata for later order creation
+      metadata: {
+        customerInfo,
+        orderDetails,
+        userId,
+        accountOptions: req.body.accountOptions
+      }
     });
 
-    // Update order with transaction reference
-    order.transaction = transaction._id;
-    await order.save();
+    // Initialize Paystack payment
+    const paystackResponse = await axios.post(
+      'https://api.paystack.co/transaction/initialize',
+      {
+        email: customerInfo.email.toLowerCase(),
+        amount: Math.round(orderDetails.total * 100), // Paystack expects kobo
+        reference: transaction.reference,
+        callback_url: `${process.env.FRONTEND_URL}/payment/callback`,
+        metadata: {
+          transactionId: transaction._id.toString(),
+          customerName: `${customerInfo.firstName} ${customerInfo.lastName}`
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
 
-    // Send order confirmation email
-    await sendOrderConfirmation(order);
+    if (!paystackResponse.data.status) {
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to initialize payment',
+      });
+    }
 
-    res.status(201).json({
+    // Update transaction with Paystack reference
+    transaction.gatewayReference = paystackResponse.data.data.reference;
+    await transaction.save();
+
+    res.status(200).json({
       success: true,
-      message: user ? 'Order created successfully' : 'Guest order created successfully',
+      message: 'Checkout initialized successfully',
       data: {
-        order: {
-          id: order._id,
-          orderNumber: order.orderNumber,
-          total: order.total,
-          status: order.status
-        },
-        transaction: {
-          id: transaction._id,
-          reference: transaction.reference,
-          amount: transaction.amount
-        },
-        userCreated: !!newUser,
-        requiresPayment: true
+        authorizationUrl: paystackResponse.data.data.authorization_url,
+        accessCode: paystackResponse.data.data.access_code,
+        reference: transaction.reference
       }
     });
 
   } catch (error) {
-    console.error('Order creation error:', error);
+    console.error('Initialize checkout error:', error);
     res.status(500).json({
       success: false,
-      message: 'Error creating order',
+      message: 'Error initializing checkout',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -535,7 +478,7 @@ const searchOrdersByEmail = async (req, res) => {
 
 module.exports = {
   // Public routes
-  createOrder,
+  initializeCheckout,
   createAccountAfterPurchase,
   getOrderByNumber, 
   

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const {
-  createOrder,
+  initializeCheckout,
   createAccountAfterPurchase,
   getOrderByNumber,
   getUserOrders,
@@ -12,7 +12,7 @@ const {
 const { protect, authorize } = require('../middlewares/auth');
 
 // Public routes
-router.post('/orders/create', createOrder);
+router.post('/orders/initialize-checkout', initializeCheckout);
 router.post('/auth/create-account-post-purchase', createAccountAfterPurchase);
 router.get('/orders/track/:orderNumber', getOrderByNumber); 
 

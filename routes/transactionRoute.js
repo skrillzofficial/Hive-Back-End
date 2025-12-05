@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const {
-  initializeTransaction,
   verifyTransaction,
   handleWebhook,
   getAllTransactions,
@@ -11,7 +10,6 @@ const {
 const { protect, authorize } = require('../middlewares/auth');
 
 // Public routes
-router.post('/transactions/initialize', initializeTransaction);
 router.get('/transactions/verify/:reference', verifyTransaction);
 router.post('/transactions/webhook', handleWebhook); 
 

@@ -3,103 +3,6 @@ const Order = require('../models/order');
 const axios = require('axios');
 const crypto = require('crypto');
 
-// @desc    Initialize payment transaction
-// @route   POST /api/transactions/initialize
-// @access  Public
-const initializeTransaction = async (req, res) => {
-  try {
-    const { orderId, email, amount } = req.body;
-
-    if (!orderId || !email || !amount) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please provide order ID, email, and amount',
-      });
-    }
-
-    const order = await Order.findById(orderId);
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found',
-      });
-    }
-
-    // Check if transaction already exists
-    const existingTransaction = await Transaction.findOne({ order: orderId });
-    if (existingTransaction && existingTransaction.status === 'success') {
-      return res.status(400).json({
-        success: false,
-        message: 'Payment already completed for this order',
-      });
-    }
-
-    let transaction;
-    if (existingTransaction) {
-      transaction = existingTransaction;
-    } else {
-      transaction = await Transaction.create({
-        order: orderId,
-        amount,
-        currency: 'NGN',
-        customerEmail: email.toLowerCase(),
-        customerName: `${order.customerInfo.firstName} ${order.customerInfo.lastName}`,
-        gateway: 'paystack',
-        status: 'pending'
-      });
-    }
-
-    // Initialize Paystack payment
-    const paystackResponse = await axios.post(
-      'https://api.paystack.co/transaction/initialize',
-      {
-        email: email.toLowerCase(),
-        amount: Math.round(amount * 100),
-        reference: transaction.reference,
-        callback_url: `${process.env.FRONTEND_URL}/payment/callback`,
-        metadata: {
-          orderId: order._id.toString(),
-          orderNumber: order.orderNumber
-        }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    if (!paystackResponse.data.status) {
-      return res.status(400).json({
-        success: false,
-        message: 'Failed to initialize payment',
-      });
-    }
-
-    transaction.gatewayReference = paystackResponse.data.data.reference;
-    await transaction.save();
-
-    res.status(200).json({
-      success: true,
-      message: 'Payment initialized successfully',
-      data: {
-        authorizationUrl: paystackResponse.data.data.authorization_url,
-        accessCode: paystackResponse.data.data.access_code,
-        reference: transaction.reference
-      }
-    });
-
-  } catch (error) {
-    console.error('Initialize transaction error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error initializing payment',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-};
-
 // @desc    Verify payment transaction
 // @route   GET /api/transactions/verify/:reference
 // @access  Public
@@ -210,15 +113,87 @@ const handleWebhook = async (req, res) => {
 
     if (event.event === 'charge.success') {
       const reference = event.data.reference;
-      const transaction = await Transaction.findOne({ reference })
-        .populate('order');
       
-      if (transaction && transaction.status !== 'success') {
-        await transaction.updateStatus('success', event.data);
-        if (transaction.order) {
-          await transaction.order.updateStock();
+      const transaction = await Transaction.findOne({ reference });
+      
+      if (!transaction) {
+        console.error('Transaction not found:', reference);
+        return res.sendStatus(404);
+      }
+
+      if (transaction.status === 'success') {
+        console.log('Payment already processed:', reference);
+        return res.sendStatus(200);
+      }
+
+      // ✅ NOW CREATE THE ORDER (after payment success)
+      const { customerInfo, orderDetails, userId, accountOptions } = transaction.metadata;
+
+      // Handle account creation if requested
+      let user = null;
+      if (userId) {
+        user = await User.findById(userId);
+      } else if (accountOptions?.createAccount && accountOptions?.password) {
+        const existingUser = await User.findOne({ 
+          email: customerInfo.email.toLowerCase() 
+        });
+        
+        if (!existingUser) {
+          user = await User.create({
+            firstName: customerInfo.firstName,
+            lastName: customerInfo.lastName,
+            email: customerInfo.email.toLowerCase(),
+            password: accountOptions.password,
+            phone: customerInfo.phone,
+            address: customerInfo.shippingAddress
+          });
         }
       }
+
+      // Create the order
+      const order = await Order.create({
+        customer: user ? user._id : null,
+        customerInfo: {
+          firstName: customerInfo.firstName,
+          lastName: customerInfo.lastName,
+          email: customerInfo.email.toLowerCase(),
+          phone: customerInfo.phone,
+          shippingAddress: customerInfo.shippingAddress
+        },
+        items: orderDetails.items,
+        subtotal: orderDetails.subtotal,
+        shippingCost: orderDetails.shippingCost,
+        tax: orderDetails.vat || orderDetails.tax || 0,
+        total: orderDetails.total,
+        deliveryMethod: orderDetails.deliveryMethod || 'standard',
+        isGuestOrder: !user,
+        accountCreated: !!user,
+        qualifiesForFreeShipping: orderDetails.qualifiesForFreeShipping || false,
+        notes: orderDetails.notes || '',
+        paymentStatus: 'paid', // ✅ Already paid!
+        transaction: transaction._id
+      });
+
+      // Update transaction with order reference
+      transaction.order = order._id;
+      await transaction.updateStatus('success', event.data);
+      
+      // Update stock
+      await order.updateStock();
+
+      // Send confirmation email
+      await sendOrderConfirmationEmail({
+        firstName: order.customerInfo.firstName,
+        lastName: order.customerInfo.lastName,
+        email: order.customerInfo.email,
+        orderNumber: order.orderNumber,
+        total: order.total,
+        items: order.items,
+        shippingAddress: order.customerInfo.shippingAddress,
+        estimatedDelivery: order.estimatedDelivery
+      });
+
+      console.log('Order created successfully:', order.orderNumber);
     }
 
     res.sendStatus(200);
@@ -457,7 +432,6 @@ const getRevenue = async (req, res) => {
 
 module.exports = {
   // Public routes
-  initializeTransaction,
   verifyTransaction,
   handleWebhook,
   
