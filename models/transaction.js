@@ -14,7 +14,7 @@ const transactionSchema = new mongoose.Schema(
     order: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Order",
-      required: true,
+      required: false,
     },
 
     // Payment Details
@@ -48,7 +48,7 @@ const transactionSchema = new mongoose.Schema(
       enum: ["pending", "success", "failed", "abandoned"],
       default: "pending",
     },
-    
+
     metadata: {
       type: mongoose.Schema.Types.Mixed, // ✅ Stores checkout data
       default: {},
