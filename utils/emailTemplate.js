@@ -352,7 +352,6 @@ const createOrderConfirmationTemplate = (
 };
 
 // PASSWORD RESET EMAIL TEMPLATE
-// PASSWORD RESET OTP EMAIL TEMPLATE
 const createPasswordResetOTPTemplate = (fullName, otp) => {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -445,10 +444,162 @@ const createPasswordResetOTPTemplate = (fullName, otp) => {
 </html>
 `;
 };
+// ORDER STATUS UPDATE EMAIL TEMPLATE
+const createOrderStatusUpdateTemplate = (fullName, orderId, status, trackingNumber, trackingUrl) => {
+  // Status display mapping
+  const statusInfo = {
+    'pending': {
+      title: 'Order Received',
+      message: 'We have received your order and it is being processed.'
+    },
+    'confirmed': {
+      title: 'Order Confirmed',
+      message: 'Your order has been confirmed and is being prepared for shipment.'
+    },
+    'processing': {
+      title: 'Order Processing',
+      message: 'Your order is currently being prepared.'
+    },
+    'shipped': {
+      title: 'Order Shipped',
+      message: 'Your order has been shipped and is on its way to you.'
+    },
+    'delivered': {
+      title: 'Order Delivered',
+      message: 'Your order has been successfully delivered. Thank you for shopping with us!'
+    },
+    'cancelled': {
+      title: 'Order Cancelled',
+      message: 'Your order has been cancelled.'
+    }
+  };
+
+  const currentStatus = statusInfo[status] || {
+    title: 'Order Update',
+    message: `Your order status has been updated to: ${status}`
+  };
+
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Order Update - Hive</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  </head>
+  <body style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #000000; background-color: #ffffff; margin: 0; padding: 0;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff;">
+      
+      <!-- Header -->
+      <div style="background-color: #000000; padding: 40px; text-align: center; border-bottom: 1px solid #e5e5e5;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 32px; font-weight: 300; letter-spacing: 8px; text-transform: uppercase;">HIVE</h1>
+      </div>
+
+      <!-- Main Content -->
+      <div style="padding: 60px 40px;">
+        
+        <!-- Greeting -->
+        <div style="margin-bottom: 40px; text-align: center;">
+          <h2 style="color: #000000; margin: 0 0 16px 0; font-size: 28px; font-weight: 300; letter-spacing: 1px;">
+            ${currentStatus.title}
+          </h2>
+          <p style="color: #666666; margin: 0; font-size: 16px; font-weight: 400; letter-spacing: 0.5px;">
+            Hello ${fullName},
+          </p>
+        </div>
+
+        <!-- Message -->
+        <div style="margin-bottom: 50px;">
+          <p style="color: #000000; margin: 0 0 24px 0; font-size: 16px; font-weight: 400; line-height: 1.8; text-align: center;">
+            ${currentStatus.message}
+          </p>
+        </div>
+
+        <!-- Order Details -->
+        <div style="background-color: #f5f5f5; padding: 30px; margin-bottom: 40px;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+              <td style="padding-bottom: 16px;">
+                <p style="color: #666666; margin: 0 0 4px 0; font-size: 12px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase;">
+                  Order Number
+                </p>
+                <p style="color: #000000; margin: 0; font-size: 16px; font-weight: 500; letter-spacing: 0.5px;">
+                  #${orderId}
+                </p>
+              </td>
+              <td style="padding-bottom: 16px; text-align: right;">
+                <p style="color: #666666; margin: 0 0 4px 0; font-size: 12px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase;">
+                  Status
+                </p>
+                <p style="color: #000000; margin: 0; font-size: 16px; font-weight: 500; letter-spacing: 0.5px;">
+                  ${currentStatus.title}
+                </p>
+              </td>
+            </tr>
+          </table>
+        </div>
+
+        ${trackingNumber ? `
+        <!-- Tracking Info -->
+        <div style="background-color: #000000; padding: 30px; margin-bottom: 40px; text-align: center;">
+          <p style="color: #ffffff; margin: 0 0 12px 0; font-size: 12px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase;">
+            Tracking Number
+          </p>
+          <p style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 2px; font-family: 'Courier New', monospace;">
+            ${trackingNumber}
+          </p>
+        </div>
+        ` : ''}
+
+        ${trackingUrl ? `
+        <!-- Track Order Button -->
+        <div style="text-align: center; margin-bottom: 50px;">
+          <a href="${trackingUrl}" target="_blank" style="display: inline-block; background-color: #000000; color: #ffffff; text-decoration: none; padding: 16px 48px; font-size: 14px; font-weight: 500; letter-spacing: 2px; text-transform: uppercase; transition: all 0.3s;">
+            Track Order
+          </a>
+        </div>
+        ` : ''}
+
+        <!-- Additional Info -->
+        <div style="margin-bottom: 50px; text-align: center;">
+          <p style="color: #666666; margin: 0; font-size: 15px; font-weight: 400; line-height: 1.8; letter-spacing: 0.5px;">
+            ${status === 'delivered' ? 'We hope you enjoy your new pieces. Thank you for choosing Hive.' : 'We will keep you updated on your order progress.'}
+          </p>
+        </div>
+
+        <!-- Divider -->
+        <div style="border-bottom: 1px solid #e5e5e5; margin: 50px 0;"></div>
+
+        <!-- Support -->
+        <div style="text-align: center;">
+          <p style="color: #666666; margin: 0 0 8px 0; font-size: 14px; font-weight: 400; letter-spacing: 0.5px;">
+            Questions about your order?
+          </p>
+          <a href="mailto:support@hive.com" style="color: #000000; text-decoration: none; font-size: 14px; font-weight: 500; letter-spacing: 0.5px;">
+            support@hive.com
+          </a>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div style="background-color: #f5f5f5; padding: 40px; text-align: center;">
+        <p style="color: #999999; margin: 0 0 8px 0; font-size: 12px; font-weight: 400; letter-spacing: 0.5px;">
+          © 2025 Hive. All rights reserved.
+        </p>
+        <p style="color: #999999; margin: 0; font-size: 12px; font-weight: 400; letter-spacing: 0.5px;">
+          Crafted for the modern wardrobe.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>
+`;
+};
 
 module.exports = {
   createWelcomeTemplate,
   createOTPTemplate,
   createOrderConfirmationTemplate,
   createPasswordResetOTPTemplate,
+ createOrderStatusUpdateTemplate,
 };

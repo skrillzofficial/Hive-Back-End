@@ -32,7 +32,9 @@ app.use(fileUpload({
 
 // Routes
 app.use("/api/v1/products", require("./routes/productRoute"));  
-app.use("/api/v1", require("./routes/userRoute"));            
+app.use("/api/v1", require("./routes/userRoute"));         
+app.use("/api/v1", require("./routes/transactionRoute"));
+app.use("/api/v1", require("./routes/orderRoute"));     
 
 // Test Route
 app.get("/", (req, res) => {
@@ -61,7 +63,7 @@ mongoose.connect(process.env.MONGO_URL, {
     });
   })
   .catch((err) => {
-    console.error("❌ MongoDB connection failed:", err.message);
+    console.error(" MongoDB connection failed:", err.message);
     process.exit(1);
   });
 

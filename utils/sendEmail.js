@@ -3,14 +3,15 @@ const {
   createWelcomeTemplate, 
   createOTPTemplate,
   createOrderConfirmationTemplate,
-  createPasswordResetOTPTemplate  
+  createPasswordResetOTPTemplate,
+  createOrderStatusUpdateTemplate  
 } = require("./emailTemplate");
 
 // Initialize SendGrid
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 const sendMail = async ({ to, subject, html, attachments = [] }) => {
-  console.log(" Attempting to send email via SendGrid to:", to);
+  console.log("Attempting to send email via SendGrid to:", to);
   
   if (!process.env.SENDGRID_API_KEY) {
     console.error(" SENDGRID_API_KEY not set in environment");
@@ -80,7 +81,7 @@ const sendOrderConfirmationEmail = async ({
   shippingAddress,
   trackingUrl
 }) => {
-  console.log(" sendOrderConfirmationEmail called for:", email);
+  console.log("sendOrderConfirmationEmail called for:", email);
   const fullName = `${firstName} ${lastName}`;
   const subject = `Order Confirmation - #${orderId}`;
   const html = createOrderConfirmationTemplate(
@@ -97,10 +98,34 @@ const sendOrderConfirmationEmail = async ({
   return await sendMail({ to: email, subject, html });
 };
 
+// ORDER STATUS UPDATE EMAIL
+const sendOrderStatusUpdateEmail = async ({ 
+  firstName,
+  lastName,
+  email, 
+  orderId,
+  status,
+  trackingNumber,
+  trackingUrl
+}) => {
+  console.log(" sendOrderStatusUpdateEmail called for:", email);
+  const fullName = `${firstName} ${lastName}`;
+  const subject = `Order Update - #${orderId}`;
+  const html = createOrderStatusUpdateTemplate(
+    fullName,
+    orderId,
+    status,
+    trackingNumber,
+    trackingUrl
+  );
+  return await sendMail({ to: email, subject, html });
+};
+
 module.exports = { 
   sendWelcomeEmail, 
   sendOTPEmail,
   sendPasswordResetOTPEmail,  
   sendOrderConfirmationEmail,
+  sendOrderStatusUpdateEmail,
   sendMail 
 };
