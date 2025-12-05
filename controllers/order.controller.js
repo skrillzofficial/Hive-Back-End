@@ -2,6 +2,7 @@ const Order = require('../models/order');
 const Transaction = require('../models/transaction');
 const User = require('../models/user');
 const Product = require('../models/product');
+const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const { sendOrderConfirmationEmail, sendOrderStatusUpdateEmail } = require('../utils/sendEmail');
 

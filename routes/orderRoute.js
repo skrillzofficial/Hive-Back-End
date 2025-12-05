@@ -14,7 +14,7 @@ const { protect, authorize } = require('../middlewares/auth');
 // Public routes
 router.post('/orders/initialize-checkout', initializeCheckout);
 router.post('/auth/create-account-post-purchase', createAccountAfterPurchase);
-router.get('/orders/track/:orderNumber', getOrderByNumber); 
+router.get('/orders/track/:orderNumber', protect, getOrderByNumber); 
 
 // Protected routes (authenticated users only)
 router.get('/orders/my-orders', protect, getUserOrders);
