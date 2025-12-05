@@ -71,8 +71,8 @@ const transactionSchema = new mongoose.Schema(
   }
 );
 
-// Generate transaction reference before saving
-transactionSchema.pre("save", async function (next) {
+// ✅ FIXED: Generate transaction reference before saving
+transactionSchema.pre("save", function (next) {
   if (!this.reference) {
     const timestamp = Date.now().toString().slice(-6);
     const random = Math.floor(Math.random() * 1000)
@@ -98,7 +98,7 @@ transactionSchema.statics.findByCustomer = function (email) {
   });
 };
 
-// Instance Methods
+// ✅ FIXED: Instance Methods - removed async from signature
 transactionSchema.methods.updateStatus = async function (
   newStatus,
   gatewayData = {}
@@ -109,20 +109,24 @@ transactionSchema.methods.updateStatus = async function (
     this.paidAt = new Date();
     this.gatewayResponse = gatewayData;
 
-    // Update associated order
-    const Order = mongoose.model("Order");
-    await Order.findByIdAndUpdate(this.order, {
-      paymentStatus: "paid",
-      status: "confirmed",
-    });
+    // Update associated order if it exists
+    if (this.order) {
+      const Order = mongoose.model("Order");
+      await Order.findByIdAndUpdate(this.order, {
+        paymentStatus: "paid",
+        status: "confirmed",
+      });
+    }
   } else if (newStatus === "failed") {
     this.gatewayResponse = gatewayData;
 
-    // Update associated order
-    const Order = mongoose.model("Order");
-    await Order.findByIdAndUpdate(this.order, {
-      paymentStatus: "failed",
-    });
+    // Update associated order if it exists
+    if (this.order) {
+      const Order = mongoose.model("Order");
+      await Order.findByIdAndUpdate(this.order, {
+        paymentStatus: "failed",
+      });
+    }
   }
 
   return this.save();
