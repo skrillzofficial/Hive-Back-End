@@ -49,10 +49,16 @@ const sendOrderStatusUpdate = async (order, status) => {
 
 // @desc    Initialize checkout and payment
 // @route   POST /api/orders/initialize-checkout
-// @access  Public
+// @access  Private (via protect middleware)
 const initializeCheckout = async (req, res) => {
   try {
-    const { customerInfo, orderDetails } = req.body;
+    const { customerInfo, orderDetails, userId, accountOptions } = req.body;
+
+    console.log('🛒 CHECKOUT DEBUG:');
+    console.log('User authenticated?', !!req.user);
+    console.log('User ID from token:', req.user?.id);
+    console.log('User ID from body:', userId);
+    console.log('Customer email:', customerInfo?.email);
 
     // Validate required fields
     if (!customerInfo || !orderDetails) {
@@ -62,10 +68,24 @@ const initializeCheckout = async (req, res) => {
       });
     }
 
-    // Check if user exists (optional, for logged-in users)
-    let userId = null;
+    // Determine the final user ID
+    // Priority: 1. User from authentication token (req.user) 2. User ID from body
+    let finalUserId = null;
     if (req.user) {
-      userId = req.user.id;
+      // User is logged in via token
+      finalUserId = req.user.id;
+      console.log('✅ Using user ID from authentication token:', finalUserId);
+    } else if (userId) {
+      // User ID provided in body (from frontend)
+      finalUserId = userId;
+      console.log('✅ Using user ID from request body:', finalUserId);
+    }
+
+    // If user is logged in but email doesn't match, log warning
+    if (req.user && customerInfo.email.toLowerCase() !== req.user.email.toLowerCase()) {
+      console.warn('⚠️  Warning: Logged-in user email does not match checkout email');
+      console.warn('Logged-in email:', req.user.email);
+      console.warn('Checkout email:', customerInfo.email);
     }
 
     // Generate unique reference for this checkout session
@@ -80,14 +100,16 @@ const initializeCheckout = async (req, res) => {
       customerName: `${customerInfo.firstName} ${customerInfo.lastName}`,
       gateway: 'paystack',
       status: 'pending',
-      // ✅ Store ALL order data in metadata for later order creation
       metadata: {
         customerInfo,
         orderDetails,
-        userId,
-        accountOptions: req.body.accountOptions
+        userId: finalUserId, // ✅ Store the determined user ID
+        accountOptions: accountOptions || req.body.accountOptions,
+        isLoggedInUser: !!req.user
       }
     });
+
+    console.log('✅ Transaction created with user ID:', finalUserId);
 
     // Initialize Paystack payment
     const paystackResponse = await axios.post(
@@ -99,7 +121,8 @@ const initializeCheckout = async (req, res) => {
         callback_url: `${process.env.FRONTEND_URL}/payment/callback`,
         metadata: {
           transactionId: transaction._id.toString(),
-          customerName: `${customerInfo.firstName} ${customerInfo.lastName}`
+          customerName: `${customerInfo.firstName} ${customerInfo.lastName}`,
+          userId: finalUserId // ✅ Also send to Paystack for reference
         }
       },
       {
@@ -121,18 +144,21 @@ const initializeCheckout = async (req, res) => {
     transaction.gatewayReference = paystackResponse.data.data.reference;
     await transaction.save();
 
+    console.log('✅ Checkout initialized for user:', finalUserId || 'guest');
+
     res.status(200).json({
       success: true,
       message: 'Checkout initialized successfully',
       data: {
         authorizationUrl: paystackResponse.data.data.authorization_url,
         accessCode: paystackResponse.data.data.access_code,
-        reference: transaction.reference
+        reference: transaction.reference,
+        userId: finalUserId // ✅ Return user ID for frontend confirmation
       }
     });
 
   } catch (error) {
-    console.error('Initialize checkout error:', error);
+    console.error('❌ Initialize checkout error:', error);
     res.status(500).json({
       success: false,
       message: 'Error initializing checkout',
@@ -397,23 +423,183 @@ const getAllOrders = async (req, res) => {
       });
     }
 
-    const { status, page = 1, limit = 20 } = req.query;
+    const { 
+      status, 
+      page = 1, 
+      limit = 20, 
+      search, 
+      startDate, 
+      endDate,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
+    
     const query = {};
     
-    if (status) {
+    // Filter by status
+    if (status && status !== 'all') {
       query.status = status;
+    }
+    
+    // Filter by date range
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) {
+        query.createdAt.$gte = new Date(startDate);
+      }
+      if (endDate) {
+        query.createdAt.$lte = new Date(endDate);
+      }
+    }
+    
+    // Search by order number or customer email
+    if (search) {
+      query.$or = [
+        { orderNumber: { $regex: search, $options: 'i' } },
+        { 'customerInfo.email': { $regex: search, $options: 'i' } },
+        { 'customerInfo.firstName': { $regex: search, $options: 'i' } },
+        { 'customerInfo.lastName': { $regex: search, $options: 'i' } }
+      ];
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    // Determine sort order
+    const sortDirection = sortOrder === 'desc' ? -1 : 1;
+    const sortOptions = { [sortBy]: sortDirection };
 
+    console.log('🔍 ADMIN ORDERS DEBUG:');
+    console.log('Query:', query);
+    console.log('Sort options:', sortOptions);
+    console.log('Skip:', skip, 'Limit:', limit);
+
+    // Fetch orders with population that handles null customers
     const orders = await Order.find(query)
-      .sort({ createdAt: -1 })
+      .sort(sortOptions)
       .skip(skip)
       .limit(parseInt(limit))
-      .populate('customer', 'firstName lastName email')
-      .populate('transaction');
+      .populate({
+        path: 'customer',
+        select: 'firstName lastName email phone',
+        // Handle null customer references gracefully
+        options: { 
+          allowNull: true,
+          default: null 
+        }
+      })
+      .populate({
+        path: 'transaction',
+        select: 'reference amount status gatewayReference paidAt'
+      });
 
+    // Get total count for pagination
     const total = await Order.countDocuments(query);
+
+    console.log(`✅ Found ${orders.length} orders out of ${total} total`);
+
+    // Format orders for response
+    const formattedOrders = orders.map(order => {
+      // Safely get customer name
+      let customerName = 'Guest Customer';
+      let customerEmail = order.customerInfo?.email || 'N/A';
+      
+      if (order.customer) {
+        customerName = `${order.customer.firstName || ''} ${order.customer.lastName || ''}`.trim();
+        customerEmail = order.customer.email || customerEmail;
+      } else if (order.customerInfo) {
+        customerName = `${order.customerInfo.firstName || ''} ${order.customerInfo.lastName || ''}`.trim();
+      }
+
+      return {
+        _id: order._id,
+        orderNumber: order.orderNumber,
+        customerId: order.customer?._id || null,
+        customerName,
+        customerEmail,
+        customerPhone: order.customerInfo?.phone || 'N/A',
+        itemsCount: order.items?.length || 0,
+        items: order.items?.map(item => ({
+          name: item.name,
+          quantity: item.quantity,
+          price: item.price,
+          total: item.price * item.quantity
+        })) || [],
+        subtotal: order.subtotal || 0,
+        shippingCost: order.shippingCost || 0,
+        tax: order.tax || 0,
+        total: order.total || 0,
+        status: order.status || 'pending',
+        paymentStatus: order.paymentStatus || 'pending',
+        deliveryStatus: order.deliveryStatus || 'pending',
+        deliveryMethod: order.deliveryMethod || 'standard',
+        isGuestOrder: order.isGuestOrder || true,
+        accountCreated: order.accountCreated || false,
+        qualifiesForFreeShipping: order.qualifiesForFreeShipping || false,
+        trackingNumber: order.trackingNumber || null,
+        notes: order.notes || '',
+        transaction: order.transaction ? {
+          reference: order.transaction.reference,
+          amount: order.transaction.amount,
+          status: order.transaction.status,
+          gatewayReference: order.transaction.gatewayReference,
+          paidAt: order.transaction.paidAt
+        } : null,
+        shippingAddress: order.customerInfo?.shippingAddress || {},
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt,
+        // Include raw data for debugging if needed
+        _rawCustomer: order.customer,
+        _rawCustomerInfo: order.customerInfo
+      };
+    });
+
+    // Get statistics for dashboard
+    const stats = await Order.aggregate([
+      { $match: query },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          totalRevenue: { $sum: '$total' }
+        }
+      }
+    ]);
+
+    // Calculate summary statistics
+    const summary = {
+      totalOrders: total,
+      totalRevenue: 0,
+      pendingOrders: 0,
+      confirmedOrders: 0,
+      processingOrders: 0,
+      shippedOrders: 0,
+      deliveredOrders: 0,
+      cancelledOrders: 0
+    };
+
+    stats.forEach(stat => {
+      summary.totalRevenue += stat.totalRevenue || 0;
+      switch (stat._id) {
+        case 'pending':
+          summary.pendingOrders = stat.count;
+          break;
+        case 'confirmed':
+          summary.confirmedOrders = stat.count;
+          break;
+        case 'processing':
+          summary.processingOrders = stat.count;
+          break;
+        case 'shipped':
+          summary.shippedOrders = stat.count;
+          break;
+        case 'delivered':
+          summary.deliveredOrders = stat.count;
+          break;
+        case 'cancelled':
+          summary.cancelledOrders = stat.count;
+          break;
+      }
+    });
 
     res.status(200).json({
       success: true,
@@ -421,14 +607,42 @@ const getAllOrders = async (req, res) => {
       total,
       pages: Math.ceil(total / limit),
       currentPage: parseInt(page),
-      data: orders
+      perPage: parseInt(limit),
+      summary,
+      data: formattedOrders,
+      filters: {
+        status: status || 'all',
+        search: search || '',
+        startDate: startDate || '',
+        endDate: endDate || '',
+        sortBy,
+        sortOrder
+      }
     });
 
   } catch (error) {
-    console.error('Get all orders error:', error);
-    res.status(500).json({
+    console.error('❌ Get all orders error:', error);
+    
+    // Provide more specific error messages
+    let errorMessage = 'Error fetching orders';
+    let statusCode = 500;
+    
+    if (error.name === 'CastError') {
+      errorMessage = 'Invalid query parameters';
+      statusCode = 400;
+    } else if (error.name === 'ValidationError') {
+      errorMessage = 'Validation error in query';
+      statusCode = 400;
+    }
+
+    res.status(statusCode).json({
       success: false,
-      message: 'Error fetching orders',
+      message: errorMessage,
+      error: process.env.NODE_ENV === 'development' ? {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      } : undefined
     });
   }
 };

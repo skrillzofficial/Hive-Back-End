@@ -70,11 +70,30 @@ const verifyTransaction = async (req, res) => {
         const { customerInfo, orderDetails, userId, accountOptions } =
           transaction.metadata;
 
-        // Handle account creation if requested
+        console.log('🔍 VERIFICATION DEBUG:');
+        console.log('User ID from metadata:', userId);
+        console.log('Customer email:', customerInfo.email);
+        console.log('Account options:', accountOptions);
+
+        // Handle user lookup - IMPROVED LOGIC
         let user = null;
+        
+        // 1. First, try to find user by ID (if logged-in user)
         if (userId) {
           user = await User.findById(userId);
-        } else if (accountOptions?.createAccount && accountOptions?.password) {
+          console.log('✅ Found user by ID:', user?.email);
+        }
+        
+        // 2. If no user found by ID, try by email
+        if (!user) {
+          user = await User.findOne({
+            email: customerInfo.email.toLowerCase(),
+          });
+          console.log('✅ Found user by email:', user?.email);
+        }
+        
+        // 3. If still no user and account creation requested, create new user
+        if (!user && accountOptions?.createAccount && accountOptions?.password) {
           const existingUser = await User.findOne({
             email: customerInfo.email.toLowerCase(),
           });
@@ -86,12 +105,16 @@ const verifyTransaction = async (req, res) => {
               email: customerInfo.email.toLowerCase(),
               password: accountOptions.password,
               phone: customerInfo.phone,
-              address: customerInfo.shippingAddress,
+              address: customerInfo.shippingAddress?.street || customerInfo.shippingAddress || '',
             });
+            console.log('✅ Created new user:', user.email);
+          } else {
+            user = existingUser;
+            console.log('✅ User already exists:', user.email);
           }
         }
 
-        // Create the order
+        // Create the order with proper user reference
         const order = await Order.create({
           customer: user ? user._id : null,
           customerInfo: {
@@ -107,14 +130,20 @@ const verifyTransaction = async (req, res) => {
           tax: orderDetails.vat || orderDetails.tax || 0,
           total: orderDetails.total,
           deliveryMethod: orderDetails.deliveryMethod || "standard",
-          isGuestOrder: !user,
-          accountCreated: !!user,
+          isGuestOrder: !user, // Should be false if user exists
+          accountCreated: !!user && !userId, // True only if account was just created (not logged in)
           qualifiesForFreeShipping:
             orderDetails.qualifiesForFreeShipping || false,
           notes: orderDetails.notes || "",
           paymentStatus: "paid",
+          status: "confirmed",
           transaction: transaction._id,
         });
+
+        console.log('✅ Order created in verification endpoint:', order.orderNumber);
+        console.log('👤 Customer field:', order.customer);
+        console.log('👥 Is guest order?', order.isGuestOrder);
+        console.log('📧 Customer email:', order.customerInfo.email);
 
         // Link transaction to order
         transaction.order = order._id;
@@ -127,7 +156,7 @@ const verifyTransaction = async (req, res) => {
           });
         }
 
-        // Send confirmation email - FIXED PARAMETERS
+        // Send confirmation email
         await sendOrderConfirmationEmail({
           firstName: order.customerInfo.firstName,
           lastName: order.customerInfo.lastName,
@@ -142,10 +171,7 @@ const verifyTransaction = async (req, res) => {
           trackingUrl: `${process.env.FRONTEND_URL}/orders/track/${order.orderNumber}`
         });
 
-        console.log(
-          "Order created in verification endpoint:",
-          order.orderNumber
-        );
+        console.log("✅ Order confirmation email sent");
       }
 
       // Refresh transaction with populated order
@@ -178,7 +204,7 @@ const verifyTransaction = async (req, res) => {
       });
     }
   } catch (error) {
-    console.error("Verify transaction error:", error);
+    console.error("❌ Verify transaction error:", error);
     res.status(500).json({
       success: false,
       message: "Error verifying payment",
@@ -224,11 +250,30 @@ const handleWebhook = async (req, res) => {
       const { customerInfo, orderDetails, userId, accountOptions } =
         transaction.metadata;
 
-      // Handle account creation if requested
+      console.log('🔍 WEBHOOK DEBUG:');
+      console.log('User ID from metadata:', userId);
+      console.log('Customer email:', customerInfo.email);
+      console.log('Account options:', accountOptions);
+
+      // Handle user lookup - FIXED LOGIC
       let user = null;
+      
+      // 1. First, try to find user by ID (if logged-in user)
       if (userId) {
         user = await User.findById(userId);
-      } else if (accountOptions?.createAccount && accountOptions?.password) {
+        console.log('✅ Found user by ID:', user?.email);
+      }
+      
+      // 2. If no user found by ID, try by email
+      if (!user) {
+        user = await User.findOne({
+          email: customerInfo.email.toLowerCase(),
+        });
+        console.log('✅ Found user by email:', user?.email);
+      }
+      
+      // 3. If still no user and account creation requested, create new user
+      if (!user && accountOptions?.createAccount && accountOptions?.password) {
         const existingUser = await User.findOne({
           email: customerInfo.email.toLowerCase(),
         });
@@ -242,10 +287,14 @@ const handleWebhook = async (req, res) => {
             phone: customerInfo.phone,
             address: customerInfo.shippingAddress,
           });
+          console.log('✅ Created new user:', user.email);
+        } else {
+          user = existingUser;
+          console.log('✅ User already exists:', user.email);
         }
       }
 
-      // Create the order
+      // Create the order with proper user reference
       const order = await Order.create({
         customer: user ? user._id : null,
         customerInfo: {
@@ -261,14 +310,20 @@ const handleWebhook = async (req, res) => {
         tax: orderDetails.vat || orderDetails.tax || 0,
         total: orderDetails.total,
         deliveryMethod: orderDetails.deliveryMethod || "standard",
-        isGuestOrder: !user,
-        accountCreated: !!user,
+        isGuestOrder: !user, // Should be false if user exists
+        accountCreated: !!user && !userId, // True only if account was just created (not logged in)
         qualifiesForFreeShipping:
           orderDetails.qualifiesForFreeShipping || false,
         notes: orderDetails.notes || "",
         paymentStatus: "paid",
+        status: "confirmed",
         transaction: transaction._id,
       });
+
+      console.log('✅ Order created:', order.orderNumber);
+      console.log('👤 Customer field:', order.customer);
+      console.log('👥 Is guest order?', order.isGuestOrder);
+      console.log('📧 Customer email:', order.customerInfo.email);
 
       // Update transaction with order reference
       transaction.order = order._id;
@@ -281,7 +336,7 @@ const handleWebhook = async (req, res) => {
         });
       }
 
-      // Send confirmation email - FIXED PARAMETERS
+      // Send confirmation email
       await sendOrderConfirmationEmail({
         firstName: order.customerInfo.firstName,
         lastName: order.customerInfo.lastName,
@@ -296,12 +351,12 @@ const handleWebhook = async (req, res) => {
         trackingUrl: `${process.env.FRONTEND_URL}/orders/track/${order.orderNumber}`
       });
 
-      console.log("Order created successfully:", order.orderNumber);
+      console.log("✅ Order created successfully:", order.orderNumber);
     }
 
     res.sendStatus(200);
   } catch (error) {
-    console.error("Webhook error:", error);
+    console.error("❌ Webhook error:", error);
     res.status(500).send("Webhook processing error");
   }
 };
