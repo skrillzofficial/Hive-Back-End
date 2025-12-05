@@ -7,7 +7,6 @@ const orderSchema = new mongoose.Schema(
       type: String,
       unique: true,
       uppercase: true
-      // ✅ REMOVED: required: true (will be generated in pre-validate hook)
     },
     
     // Customer Information
@@ -181,7 +180,6 @@ orderSchema.pre('validate', async function() {
 });
 
 // Index for better query performance
-orderSchema.index({ orderNumber: 1 });
 orderSchema.index({ 'customerInfo.email': 1 });
 orderSchema.index({ customer: 1, createdAt: -1 });
 orderSchema.index({ createdAt: -1 });
@@ -192,7 +190,7 @@ orderSchema.statics.findByOrderNumber = function(orderNumber) {
 };
 
 orderSchema.statics.findByCustomer = function(customerId) {
-  return this.find({ customer: customerId }).sort({ createdAt: -1 });
+  return this.find({ customer: customerId }).sort({ createdAt: -1 }); 
 };
 
 orderSchema.statics.findGuestOrdersByEmail = function(email) {
