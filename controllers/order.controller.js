@@ -384,7 +384,22 @@ const updateOrderStatus = async (req, res) => {
 
     // Update fields if provided
     const previousStatus = order.status;
-    if (status) order.status = status;
+    
+    if (status) {
+      order.status = status;
+      
+      // AUTO-UPDATE DELIVERY STATUS BASED ON ORDER STATUS
+      if (status === 'confirmed') {
+        order.deliveryStatus = 'processing';
+      } else if (status === 'processing') {
+        order.deliveryStatus = 'processing';
+      } else if (status === 'completed') {
+        order.deliveryStatus = 'delivered';
+      } else if (status === 'cancelled') {
+        order.deliveryStatus = 'cancelled';
+      }
+    }
+    
     if (deliveryStatus) order.deliveryStatus = deliveryStatus;
     if (trackingNumber) order.trackingNumber = trackingNumber;
 
@@ -402,7 +417,6 @@ const updateOrderStatus = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Update order error:', error);
     res.status(500).json({
       success: false,
       message: 'Error updating order',
