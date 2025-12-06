@@ -32,9 +32,9 @@ app.use(fileUpload({
 
 // Routes
 app.use("/api/v1/products", require("./routes/productRoute"));  
-app.use("/api/v1", require("./routes/userRoute"));         
-app.use("/api/v1", require("./routes/transactionRoute"));
-app.use("/api/v1", require("./routes/orderRoute"));     
+app.use("/api/v1/user", require("./routes/userRoute"));         
+app.use("/api/v1/transactions", require("./routes/transactionRoute"));
+app.use("/api/v1/orders", require("./routes/orderRoute"));     
 
 // Test Route
 app.get("/", (req, res) => {
@@ -52,19 +52,33 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: err.message || "Server error" });
 });
 
-// Start Server
-mongoose.connect(process.env.MONGO_URL, {
-  dbName: 'Hive' 
+// MongoDB Connection
+const MONGO_URI = process.env.MONGODB_URI || process.env.MONGO_URL;
+
+if (!MONGO_URI) {
+  console.error("❌ MongoDB URI not found in environment variables");
+  process.exit(1);
+}
+
+console.log("🔗 Connecting to MongoDB...");
+
+mongoose.connect(MONGO_URI, {
+  dbName: 'Hive',
+  serverSelectionTimeoutMS: 30000,
+  socketTimeoutMS: 45000,
 })
   .then(() => {
-    console.log("✓ Connected to MongoDB - Database: Hive");
+    console.log("✅ MongoDB Connected - Database: Hive");
     app.listen(PORT, () => {
-      console.log(`✓ Server running on port ${PORT}`);
+      console.log(`✅ Server running on http://localhost:${PORT}`);
     });
   })
   .catch((err) => {
-    console.error(" MongoDB connection failed:", err.message);
+    console.error("❌ MongoDB connection failed:", err.message);
+    if (err.message.includes('ETIMEOUT')) {
+      console.error("💡 Tip: Check MongoDB Atlas Network Access settings");
+      console.error("💡 Make sure 0.0.0.0/0 is whitelisted");
+    }
     process.exit(1);
   });
-
 module.exports = app;
