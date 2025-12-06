@@ -17,7 +17,7 @@ cloudinary.config({
 
 // Middleware
 app.use(cors({
-  origin: ["http://localhost:3000", "http://localhost:5173", "https://hive-front-end-three.vercel.app"],
+  origin: ["http://localhost:3000", "http://localhost:5173", "https://hive-front-end-three.vercel.app", "https://www.hivethread.com"],
   credentials: true,
 }));
 

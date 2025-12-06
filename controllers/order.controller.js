@@ -388,7 +388,7 @@ const updateOrderStatus = async (req, res) => {
     if (status) {
       order.status = status;
       
-      // AUTO-UPDATE DELIVERY STATUS BASED ON ORDER STATUS
+      // 🔥 AUTO-UPDATE DELIVERY STATUS BASED ON ORDER STATUS
       if (status === 'confirmed') {
         order.deliveryStatus = 'processing';
       } else if (status === 'processing') {
