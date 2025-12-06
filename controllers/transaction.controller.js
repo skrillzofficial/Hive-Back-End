@@ -250,11 +250,6 @@ const handleWebhook = async (req, res) => {
       const { customerInfo, orderDetails, userId, accountOptions } =
         transaction.metadata;
 
-      console.log('🔍 WEBHOOK DEBUG:');
-      console.log('User ID from metadata:', userId);
-      console.log('Customer email:', customerInfo.email);
-      console.log('Account options:', accountOptions);
-
       // Handle user lookup - FIXED LOGIC
       let user = null;
       
@@ -320,10 +315,6 @@ const handleWebhook = async (req, res) => {
         transaction: transaction._id,
       });
 
-      console.log('✅ Order created:', order.orderNumber);
-      console.log('👤 Customer field:', order.customer);
-      console.log('👥 Is guest order?', order.isGuestOrder);
-      console.log('📧 Customer email:', order.customerInfo.email);
 
       // Update transaction with order reference
       transaction.order = order._id;
